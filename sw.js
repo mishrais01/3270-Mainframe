@@ -1,8 +1,11 @@
 // Service worker for the 3270 Mainframe Terminal PWA.
-// Strategy: cache-first app shell, so the app opens and works fully
-// offline after the first successful load. Bump CACHE_NAME to force
-// clients to pick up a new version.
-const CACHE_NAME = 'mf3270-shell-v1';
+// Strategy: network-first with cache fallback. Every load tries to fetch
+// the latest files from the network (and updates the cache with whatever
+// it gets); the cache is only used as a fallback when there's no network
+// (fully offline). This means new content you publish shows up on next
+// load automatically -- no manual cache-busting needed. Bump CACHE_NAME
+// on major changes if you ever want to force-purge old cached entries.
+const CACHE_NAME = 'mf3270-shell-v2';
 const APP_SHELL = [
   './index.html',
   './manifest.json',
@@ -31,18 +34,14 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request)
-        .then((response) => {
-          // Opportunistically cache same-origin successful responses for next time.
-          if (response && response.ok && event.request.url.startsWith(self.location.origin)) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          }
-          return response;
-        })
-        .catch(() => cached); // offline and not cached: nothing more we can do
-    })
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.ok && event.request.url.startsWith(self.location.origin)) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request)) // offline: fall back to last-known-good
   );
 });
