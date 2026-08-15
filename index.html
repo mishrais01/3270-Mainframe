@@ -1,0 +1,2134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>3270 Mainframe Terminal</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="3270 MF">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<style>
+  :root{
+    --bg:#000000;
+    --green:#33ff66;
+    --green-dim:#1c8f3d;
+    --amber:#ffb000;
+    --blue:#5ad1ff;
+    --white:#e8ffe8;
+    --red:#ff5555;
+    --field-bg:#001a00;
+  }
+  *{box-sizing:border-box;}
+  html,body{ height:100%; margin:0; background:#000; font-family:'IBM Plex Mono','Consolas','Courier New',monospace; }
+  #crt{
+    width:100%; max-width:960px; margin:0 auto; background:var(--bg); color:var(--green);
+    padding:14px 18px 10px 18px; min-height:680px; display:flex; flex-direction:column;
+    border:2px solid #111; border-radius:6px;
+    box-shadow: inset 0 0 60px rgba(51,255,102,0.06), 0 0 30px rgba(0,0,0,0.6);
+    position:relative; overflow:hidden;
+  }
+  #crt::before{
+    content:""; position:absolute; inset:0;
+    background:repeating-linear-gradient(rgba(0,0,0,0) 0px, rgba(0,0,0,0) 1px, rgba(0,0,0,0.12) 2px);
+    pointer-events:none; mix-blend-mode:multiply;
+  }
+  #screen{
+    flex:1; white-space:pre-wrap; font-size:13.5px; line-height:1.33; letter-spacing:0.4px;
+    text-shadow:0 0 3px rgba(51,255,102,0.55); overflow-y:auto; min-height:460px;
+  }
+  .amber{color:var(--amber); text-shadow:0 0 3px rgba(255,176,0,0.55);}
+  .blue{color:var(--blue); text-shadow:0 0 3px rgba(90,209,255,0.55);}
+  .white{color:var(--white); text-shadow:0 0 3px rgba(232,255,232,0.55);}
+  .red{color:var(--red); text-shadow:0 0 3px rgba(255,85,85,0.55);}
+  .dim{color:var(--green-dim);}
+  #cmdline{ display:flex; align-items:center; border-top:1px solid #113311; padding-top:6px; margin-top:6px; gap:6px; }
+  #prompt{color:var(--amber);}
+  #cmdinput{
+    flex:1; background:transparent; border:none; outline:none; color:var(--white);
+    font-family:inherit; font-size:14px; text-shadow:0 0 3px rgba(232,255,232,0.55); letter-spacing:0.5px;
+  }
+  #pfbar{ display:flex; flex-wrap:wrap; gap:4px; padding:8px 0 2px 0; border-top:1px solid #113311; margin-top:6px; }
+  .pfkey{
+    background:#001a00; border:1px solid var(--green-dim); color:var(--green); font-family:inherit;
+    font-size:11px; padding:4px 7px; border-radius:3px; cursor:pointer;
+  }
+  .pfkey:hover{background:#0a3a0a;}
+  #editArea{
+    width:100%; flex:1; min-height:400px; background:#000; color:var(--white);
+    border:1px solid var(--green-dim); font-family:inherit; font-size:13px; line-height:1.3;
+    padding:6px; resize:none; outline:none; text-shadow:0 0 3px rgba(232,255,232,0.4);
+  }
+  ::selection{background:var(--green); color:#000;}
+  #screen::-webkit-scrollbar{width:8px;}
+  #screen::-webkit-scrollbar-thumb{background:var(--green-dim); border-radius:4px;}
+  .hdr{display:flex; justify-content:space-between; color:var(--green-dim); font-size:12px; margin-bottom:4px;}
+
+  /* Mobile / PWA standalone adjustments */
+  html,body{ overscroll-behavior:none; }
+  #crt{
+    padding-top: max(14px, env(safe-area-inset-top));
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    padding-left: max(18px, env(safe-area-inset-left));
+    padding-right: max(18px, env(safe-area-inset-right));
+  }
+  .pfkey{ padding:8px 10px; font-size:12px; } /* larger touch targets than the desktop default */
+  #cmdinput{ font-size:16px; } /* avoids auto-zoom-on-focus on some mobile browsers */
+  @media (max-width: 480px){
+    #crt{ border-radius:0; border-width:0; min-height:100dvh; }
+    #screen{ font-size:12.5px; min-height:50vh; }
+    .hdr{ font-size:10.5px; }
+  }
+</style>
+</head>
+<body>
+<div id="crt">
+  <div class="hdr"><span id="hdrLeft">z/OS 3270 EMULATOR</span><span id="hdrRight"></span></div>
+  <div id="screen"></div>
+  <textarea id="editArea" style="display:none;" spellcheck="false"></textarea>
+  <div id="cmdline">
+    <span id="prompt">===&gt;</span>
+    <input id="cmdinput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="" />
+  </div>
+  <div id="pfbar"></div>
+  <input type="file" id="importFileInput" accept=".json" style="display:none;" />
+</div>
+
+<script>
+(function(){
+
+// =====================================================================
+// ---------------------------- REXX ENGINE ----------------------------
+// Real (subset) REXX interpreter: SAY, assignment, IF/THEN/ELSE, DO loops
+// (range/WHILE/FOREVER/count), SELECT/WHEN, LEAVE/ITERATE, ARG/PULL/PARSE,
+// EXIT/RETURN, arithmetic + string functions, compound (stem) variables,
+// and ADDRESS TSO host-command support (ALLOC/FREE/EXECIO/etc via a
+// pluggable hostCommandHandler) so REXX execs can genuinely read & write
+// datasets, matching real TSO/REXX idioms.
+// =====================================================================
+function Rexx(program, opts){
+  opts = opts || {};
+  this.output = [];
+  this.vars = {};
+  this.argString = opts.argString || '';
+  this.inputQueue = (opts.inputQueue || []).slice();
+  this.rc = 0;
+  this.print = (s)=>this.output.push(s);
+  this.maxSteps = 200000;
+  this.steps = 0;
+  this.program = program;
+  this.address = 'TSO';
+  this.hostCommandHandler = opts.hostCommandHandler || null;
+  this.allocs = opts.initialAllocs ? Object.assign({}, opts.initialAllocs) : {};
+  this.cursors = {}; // DB2 cursor state: name -> {sql, rows, columns, pos, open}
+}
+Rexx.prototype.run = function(){
+  try{
+    const lines = this.preprocess(this.program);
+    const {stmts} = this.parseBlock(lines, 0, lines.length);
+    this.exec(stmts);
+  }catch(e){
+    if(e && e.__rexxExit){ /* normal exit */ }
+    else{ this.output.push('*** REXX ERROR: ' + (e.message||e)); this.rc = this.rc || 12; }
+  }
+  return {output:this.output, rc:this.rc, vars:this.vars};
+};
+Rexx.prototype.preprocess = function(src){
+  let s = src.replace(/\/\*[\s\S]*?\*\//g,' ');
+  const rawLines = s.split(/\r?\n/);
+  let joined=[]; let buf='';
+  for(let raw of rawLines){
+    let trimmed = raw.trim();
+    buf = buf ? buf + ' ' + trimmed : trimmed;
+    if(buf.endsWith(',')){ buf = buf.slice(0,-1)+' '; continue; }
+    joined.push(buf); buf='';
+  }
+  if(buf) joined.push(buf);
+  let clauses=[];
+  for(let line of joined){
+    if(!line.trim()) continue;
+    let parts = this.splitRespectingQuotes(line, ';');
+    for(let p of parts){ const t=p.trim(); if(t) clauses.push(t); }
+  }
+  return clauses;
+};
+Rexx.prototype.splitRespectingQuotes = function(str, sep){
+  let out=[]; let cur=''; let q=null;
+  for(let i=0;i<str.length;i++){
+    const c=str[i];
+    if(q){ cur+=c; if(c===q) q=null; }
+    else if(c==='"'||c==="'"){ q=c; cur+=c; }
+    else if(c===sep){ out.push(cur); cur=''; }
+    else cur+=c;
+  }
+  if(cur.trim()!==''||out.length===0) out.push(cur);
+  return out;
+};
+Rexx.prototype.firstWord = function(clause){ const m=clause.match(/^\s*([^\s]+)/); return m? m[1].toUpperCase():''; };
+Rexx.prototype.parseBlock = function(lines,start,end){
+  let stmts=[]; let i=start;
+  while(i<end){
+    const clause=lines[i]; const kw=this.firstWord(clause);
+    if(kw==='END') return {stmts,next:i};
+    if(kw==='ELSE') return {stmts,next:i};
+    const parsed=this.parseOne(lines,i,end);
+    stmts.push(parsed.stmt); i=parsed.next;
+  }
+  return {stmts,next:i};
+};
+Rexx.prototype.parseOne = function(lines,i,end){
+  const clause=lines[i]; const kw=this.firstWord(clause); const rest=clause.slice(kw.length).trim();
+  if(kw==='SAY') return {stmt:{type:'say',expr:rest}, next:i+1};
+  if(kw==='EXIT') return {stmt:{type:'exit',expr:rest}, next:i+1};
+  if(kw==='RETURN') return {stmt:{type:'exit',expr:rest}, next:i+1};
+  if(kw==='ARG') return {stmt:{type:'arg',names:rest.split(/\s+/).filter(Boolean)}, next:i+1};
+  if(kw==='PULL') return {stmt:{type:'pull',names:rest.split(/\s+/).filter(Boolean)}, next:i+1};
+  if(kw==='PARSE'){
+    const r2=rest.trim(); const kw2=r2.split(/\s+/)[0].toUpperCase();
+    if(kw2==='ARG') return {stmt:{type:'arg',names:r2.slice(3).trim().split(/\s+/).filter(Boolean)}, next:i+1};
+    if(kw2==='PULL') return {stmt:{type:'pull',names:r2.slice(4).trim().split(/\s+/).filter(Boolean)}, next:i+1};
+    if(kw2==='VALUE'){
+      const withIdx=r2.toUpperCase().indexOf(' WITH ');
+      const exprPart=r2.slice(6, withIdx>=0?withIdx:undefined).trim();
+      const namesPart= withIdx>=0? r2.slice(withIdx+6).trim():'';
+      return {stmt:{type:'parsevalue',expr:exprPart,names:namesPart.split(/\s+/).filter(Boolean)}, next:i+1};
+    }
+    return {stmt:{type:'nop'}, next:i+1};
+  }
+  if(kw==='LEAVE') return {stmt:{type:'leave'}, next:i+1};
+  if(kw==='ITERATE') return {stmt:{type:'iterate'}, next:i+1};
+  if(kw==='NOP') return {stmt:{type:'nop'}, next:i+1};
+  if(kw==='DO') return this.parseDo(lines,i,end,rest);
+  if(kw==='IF') return this.parseIf(lines,i,end,rest);
+  if(kw==='SELECT') return this.parseSelect(lines,i,end);
+  if(kw==='ADDRESS') return {stmt:{type:'address', env: rest.trim()}, next:i+1};
+  const am = clause.match(/^([A-Za-z_][A-Za-z0-9_.!?]*)\s*=\s*(.*)$/);
+  if(am) return {stmt:{type:'assign',name:am[1],expr:am[2]}, next:i+1};
+  // Any clause that's not a recognized keyword instruction or assignment is,
+  // per real REXX semantics, a command sent to the current ADDRESS environment.
+  return {stmt:{type:'hostcmd', expr: clause}, next:i+1};
+};
+Rexx.prototype.parseDo = function(lines,i,end,rest){
+  let doSpec; const r=rest.trim(); const rU=r.toUpperCase();
+  if(rU.startsWith('WHILE')) doSpec={kind:'while',cond:r.slice(5).trim()};
+  else if(rU==='FOREVER'||rU==='') doSpec={kind: r===''?'once':'forever'};
+  else{
+    const m=r.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s+TO\s+(.+?)(\s+BY\s+(.+))?$/i);
+    if(m) doSpec={kind:'range',varName:m[1],start:m[2],end:m[3],step:m[5]||'1'};
+    else doSpec={kind:'count',count:r};
+  }
+  const body=this.parseBlock(lines,i+1,end);
+  let next=body.next;
+  if(this.firstWord(lines[next]||'')==='END') next=next+1;
+  return {stmt:{type:'do',spec:doSpec,body:body.stmts}, next};
+};
+Rexx.prototype.parseIf = function(lines,i,end,rest){
+  const thenIdx=rest.toUpperCase().indexOf(' THEN');
+  let cond,remainder;
+  if(thenIdx>=0){ cond=rest.slice(0,thenIdx).trim(); remainder=rest.slice(thenIdx+5).trim(); }
+  else{ cond=rest.trim(); remainder=''; }
+  let thenStmt,next;
+  if(remainder){ const sub=this.parseOne([remainder],0,1); thenStmt=sub.stmt; next=i+1; }
+  else{ const p=this.parseOne(lines,i+1,end); thenStmt=p.stmt; next=p.next; }
+  let elseStmt=null;
+  if(this.firstWord(lines[next]||'')==='ELSE'){
+    const elseClause=lines[next]; const elseRest=elseClause.slice(4).trim();
+    if(elseRest){ const sub=this.parseOne([elseRest],0,1); elseStmt=sub.stmt; next=next+1; }
+    else{ const p2=this.parseOne(lines,next+1,end); elseStmt=p2.stmt; next=p2.next; }
+  }
+  return {stmt:{type:'if',cond,then:thenStmt,else:elseStmt}, next};
+};
+Rexx.prototype.parseSelect = function(lines,i,end){
+  let i2=i+1; let whens=[]; let otherwise=[];
+  while(i2<end){
+    const kw=this.firstWord(lines[i2]);
+    if(kw==='END'){ i2++; break; }
+    if(kw==='WHEN'){
+      const rest=lines[i2].slice(4).trim();
+      const thenIdx=rest.toUpperCase().indexOf(' THEN');
+      const cond= thenIdx>=0? rest.slice(0,thenIdx).trim():rest;
+      const remainder= thenIdx>=0? rest.slice(thenIdx+5).trim():'';
+      let stmt,next;
+      if(remainder){ const sub=this.parseOne([remainder],0,1); stmt=sub.stmt; next=i2+1; }
+      else{ const p=this.parseOne(lines,i2+1,end); stmt=p.stmt; next=p.next; }
+      whens.push({cond,stmt}); i2=next;
+    } else if(kw==='OTHERWISE'){
+      const p=this.parseBlock(lines,i2+1,end); otherwise=p.stmts; i2=p.next;
+    } else i2++;
+  }
+  return {stmt:{type:'select',whens,otherwise}, next:i2};
+};
+const LEAVE=Symbol('leave'), ITERATE=Symbol('iterate');
+Rexx.prototype.exec = function(stmts){
+  for(const st of stmts){ const sig=this.execOne(st); if(sig===LEAVE||sig===ITERATE) return sig; }
+  return null;
+};
+Rexx.prototype.execOne = function(st){
+  this.steps++;
+  if(this.steps>this.maxSteps) throw new Error('step limit exceeded (possible infinite loop)');
+  switch(st.type){
+    case 'nop': case 'unknown': return null;
+    case 'address': { this.address = (st.env||'').toUpperCase(); return null; }
+    case 'hostcmd': {
+      const text = this.evalToString(st.expr);
+      if(typeof this.hostCommandHandler === 'function'){
+        const res = this.hostCommandHandler(text, this.address, this) || {};
+        this.vars['RC'] = res.rc !== undefined ? res.rc : 0;
+        if(res.output) res.output.forEach(o=>this.print(o));
+        if(res.setVars) Object.keys(res.setVars).forEach(k=>{ this.vars[k.toUpperCase()] = res.setVars[k]; });
+      } else { this.vars['RC'] = 0; }
+      return null;
+    }
+    case 'say': this.print(this.evalToString(st.expr)); return null;
+    case 'assign': this.vars[this.resolveName(st.name)] = this.evalExpr(st.expr); return null;
+    case 'exit': {
+      const v = st.expr? this.evalExpr(st.expr):'';
+      if(typeof v==='number' && Number.isFinite(v)) this.rc = v;
+      const e=new Error('exit'); e.__rexxExit=true; throw e;
+    }
+    case 'arg': {
+      const parts = this.argString.trim().length? this.argString.trim().split(/\s+/):[];
+      st.names.forEach((nm,idx)=>{ this.vars[nm.toUpperCase()] = parts[idx]!==undefined? parts[idx]:''; });
+      return null;
+    }
+    case 'pull': {
+      st.names.forEach((nm)=>{ const v=this.inputQueue.length? this.inputQueue.shift():''; this.vars[nm.toUpperCase()]=String(v).toUpperCase(); });
+      return null;
+    }
+    case 'parsevalue': {
+      const val=String(this.evalExpr(st.expr)); const parts=val.trim().split(/\s+/);
+      st.names.forEach((nm,idx)=>{ this.vars[nm.toUpperCase()] = parts[idx]!==undefined? parts[idx]:''; });
+      return null;
+    }
+    case 'if': {
+      if(this.truthy(this.evalExpr(st.cond))) return this.execOne(st.then);
+      else if(st.else) return this.execOne(st.else);
+      return null;
+    }
+    case 'select': {
+      for(const w of st.whens){ if(this.truthy(this.evalExpr(w.cond))) return this.execOne(w.stmt); }
+      return this.exec(st.otherwise);
+    }
+    case 'do': return this.execDo(st);
+    case 'leave': return LEAVE;
+    case 'iterate': return ITERATE;
+    default: return null;
+  }
+};
+Rexx.prototype.execDo = function(st){
+  const spec=st.spec;
+  if(spec.kind==='once'){ this.exec(st.body); return null; }
+  if(spec.kind==='range'){
+    let cur=this.toNumber(this.evalExpr(spec.start));
+    const endV=this.toNumber(this.evalExpr(spec.end));
+    const step=this.toNumber(this.evalExpr(spec.step));
+    while((step>=0 && cur<=endV) || (step<0 && cur>=endV)){
+      this.vars[spec.varName.toUpperCase()]=cur;
+      const sig=this.exec(st.body);
+      if(sig===LEAVE) break;
+      cur+=step;
+    }
+    return null;
+  }
+  if(spec.kind==='count'){
+    let n=this.toNumber(this.evalExpr(spec.count));
+    for(let k=0;k<n;k++){ const sig=this.exec(st.body); if(sig===LEAVE) break; }
+    return null;
+  }
+  if(spec.kind==='while'){
+    let guard=0;
+    while(this.truthy(this.evalExpr(spec.cond))){
+      if(++guard>this.maxSteps) throw new Error('loop guard exceeded');
+      const sig=this.exec(st.body); if(sig===LEAVE) break;
+    }
+    return null;
+  }
+  if(spec.kind==='forever'){
+    let guard=0;
+    while(true){
+      if(++guard>this.maxSteps) throw new Error('loop guard exceeded');
+      const sig=this.exec(st.body); if(sig===LEAVE) break;
+    }
+    return null;
+  }
+  return null;
+};
+Rexx.prototype.evalToString = function(expr){ return this.toStr(this.evalExpr(expr)); };
+Rexx.prototype.toStr = function(v){
+  if(v===undefined||v===null) return '';
+  if(typeof v==='number'){ if(Number.isInteger(v)) return String(v); let s=String(Math.round(v*1e6)/1e6); return s; }
+  return String(v);
+};
+Rexx.prototype.toNumber = function(v){ if(typeof v==='number') return v; const n=parseFloat(v); return isNaN(n)?0:n; };
+Rexx.prototype.truthy = function(v){ const s=this.toStr(v).trim(); return s==='1' || s.toUpperCase()==='TRUE'; };
+Rexx.prototype.resolveName = function(name){
+  if(name.indexOf('.')===-1) return name.toUpperCase();
+  const parts=name.split('.'); const stem=parts[0].toUpperCase();
+  const tail=parts.slice(1).map(seg=>{
+    if(/^[A-Za-z_][A-Za-z0-9_]*$/.test(seg)) return this.toStr(this.lookupSimple(seg));
+    return seg;
+  });
+  return stem + '.' + tail.join('.');
+};
+Rexx.prototype.lookupSimple = function(name){ const N=name.toUpperCase(); if(Object.prototype.hasOwnProperty.call(this.vars,N)) return this.vars[N]; return name; };
+Rexx.prototype.lookupVar = function(name){
+  const resolved=this.resolveName(name);
+  if(Object.prototype.hasOwnProperty.call(this.vars,resolved)) return this.vars[resolved];
+  return resolved;
+};
+Rexx.prototype.evalExpr = function(expr){ const toks=this.tokenizeExpr(expr); const p={toks,pos:0}; return this.parseOr(p); };
+Rexx.prototype.tokenizeExpr = function(str){
+  let toks=[]; let i=0; const n=str.length;
+  while(i<n){
+    const c=str[i];
+    if(/\s/.test(c)){ i++; continue; }
+    if(c==='"'||c==="'"){
+      const q=c; let j=i+1; let val='';
+      while(j<n){ if(str[j]===q){ if(str[j+1]===q){ val+=q; j+=2; continue;} break;} val+=str[j]; j++; }
+      toks.push({t:'str',v:val}); i=j+1; continue;
+    }
+    if(str.startsWith('||',i)){ toks.push({t:'op',v:'||'}); i+=2; continue; }
+    if(str.startsWith('==',i)){ toks.push({t:'op',v:'=='}); i+=2; continue; }
+    if(str.startsWith('\\==',i)){ toks.push({t:'op',v:'\\=='}); i+=3; continue; }
+    if(str.startsWith('\\=',i)){ toks.push({t:'op',v:'\\='}); i+=2; continue; }
+    if(str.startsWith('<>',i)){ toks.push({t:'op',v:'\\='}); i+=2; continue; }
+    if(str.startsWith('>=',i)){ toks.push({t:'op',v:'>='}); i+=2; continue; }
+    if(str.startsWith('<=',i)){ toks.push({t:'op',v:'<='}); i+=2; continue; }
+    if(str.startsWith('**',i)){ toks.push({t:'op',v:'**'}); i+=2; continue; }
+    if(str.startsWith('//',i)){ toks.push({t:'op',v:'//'}); i+=2; continue; }
+    if('+-*/=()<>&|,\\'.includes(c)){ toks.push({t:'op',v:c}); i++; continue; }
+    if(/[0-9.]/.test(c)){ let j=i; while(j<n && /[0-9.]/.test(str[j])) j++; toks.push({t:'num',v:parseFloat(str.slice(i,j))}); i=j; continue; }
+    let j=i; while(j<n && /[A-Za-z0-9_.!?]/.test(str[j])) j++;
+    if(j===i){ i++; continue; }
+    const word=str.slice(i,j);
+    if(str[j]==='(') toks.push({t:'func',v:word}); else toks.push({t:'id',v:word});
+    i=j;
+  }
+  return toks;
+};
+Rexx.prototype.peek=function(p){return p.toks[p.pos];};
+Rexx.prototype.next=function(p){return p.toks[p.pos++];};
+Rexx.prototype.parseOr = function(p){
+  let left=this.parseCompare(p);
+  while(this.peek(p) && this.peek(p).t==='op' && (this.peek(p).v==='&'||this.peek(p).v==='|')){
+    const op=this.next(p).v; const right=this.parseCompare(p);
+    const l=this.truthy(left), r=this.truthy(right);
+    left = (op==='&')? ((l&&r)?1:0) : ((l||r)?1:0);
+  }
+  return left;
+};
+Rexx.prototype.parseCompare = function(p){
+  let left=this.parseConcat(p);
+  while(this.peek(p) && this.peek(p).t==='op' && ['=','\\=','==','\\==','>','<','>=','<='].includes(this.peek(p).v)){
+    const op=this.next(p).v; const right=this.parseConcat(p);
+    left=this.compare(left,right,op);
+  }
+  return left;
+};
+Rexx.prototype.compare = function(a,b,op){
+  const an=this.toNumber(a), bn=this.toNumber(b);
+  const as=this.toStr(a), bs=this.toStr(b);
+  const bothNumeric = !isNaN(parseFloat(as)) && !isNaN(parseFloat(bs)) && as.trim()!=='' && bs.trim()!=='';
+  let res;
+  switch(op){
+    case '=': case '==': res= bothNumeric? (an===bn):(as===bs); break;
+    case '\\=': case '\\==': res= bothNumeric? (an!==bn):(as!==bs); break;
+    case '>': res= bothNumeric? (an>bn):(as>bs); break;
+    case '<': res= bothNumeric? (an<bn):(as<bs); break;
+    case '>=': res= bothNumeric? (an>=bn):(as>=bs); break;
+    case '<=': res= bothNumeric? (an<=bn):(as<=bs); break;
+  }
+  return res?1:0;
+};
+Rexx.prototype.parseConcat = function(p){
+  let left=this.parseAdd(p);
+  while(this.peek(p)){
+    const t=this.peek(p);
+    if(t.t==='op' && t.v==='||'){ this.next(p); const right=this.parseAdd(p); left=this.toStr(left)+this.toStr(right); }
+    else if(t.t==='str'||t.t==='num'||t.t==='id'||t.t==='func'){ const right=this.parseAdd(p); left=this.toStr(left)+' '+this.toStr(right); }
+    else break;
+  }
+  return left;
+};
+Rexx.prototype.parseAdd = function(p){
+  let left=this.parseMul(p);
+  while(this.peek(p) && this.peek(p).t==='op' && (this.peek(p).v==='+'||this.peek(p).v==='-')){
+    const op=this.next(p).v; const right=this.parseMul(p);
+    left= op==='+'? this.toNumber(left)+this.toNumber(right) : this.toNumber(left)-this.toNumber(right);
+  }
+  return left;
+};
+Rexx.prototype.parseMul = function(p){
+  let left=this.parsePow(p);
+  while(this.peek(p) && this.peek(p).t==='op' && (this.peek(p).v==='*'||this.peek(p).v==='/'||this.peek(p).v==='//')){
+    const op=this.next(p).v; const right=this.parsePow(p); const rn=this.toNumber(right);
+    if(op==='*') left=this.toNumber(left)*rn;
+    else if(op==='/') left= rn===0? NaN : this.toNumber(left)/rn;
+    else left= rn===0? NaN : this.toNumber(left)%rn;
+  }
+  return left;
+};
+Rexx.prototype.parsePow = function(p){
+  let left=this.parseUnary(p);
+  while(this.peek(p) && this.peek(p).t==='op' && this.peek(p).v==='**'){
+    this.next(p); const right=this.parseUnary(p); left=Math.pow(this.toNumber(left), this.toNumber(right));
+  }
+  return left;
+};
+Rexx.prototype.parseUnary = function(p){
+  const t=this.peek(p);
+  if(t && t.t==='op' && (t.v==='-'||t.v==='+')){ this.next(p); const v=this.parseUnary(p); return t.v==='-'? -this.toNumber(v): this.toNumber(v); }
+  if(t && t.t==='op' && t.v==='\\'){ this.next(p); const v=this.parseUnary(p); return this.truthy(v)?0:1; }
+  return this.parsePrimary(p);
+};
+Rexx.prototype.parsePrimary = function(p){
+  const t=this.next(p);
+  if(!t) return '';
+  if(t.t==='num') return t.v;
+  if(t.t==='str') return t.v;
+  if(t.t==='op' && t.v==='('){ const v=this.parseOr(p); if(this.peek(p) && this.peek(p).v===')') this.next(p); return v; }
+  if(t.t==='func'){
+    this.next(p);
+    let args=[];
+    if(this.peek(p) && !(this.peek(p).t==='op' && this.peek(p).v===')')){
+      args.push(this.parseOr(p));
+      while(this.peek(p) && this.peek(p).t==='op' && this.peek(p).v===','){ this.next(p); args.push(this.parseOr(p)); }
+    }
+    if(this.peek(p) && this.peek(p).v===')') this.next(p);
+    return this.callFunc(t.v,args);
+  }
+  if(t.t==='id') return this.lookupVar(t.v);
+  return '';
+};
+Rexx.prototype.callFunc = function(name,args){
+  const N=name.toUpperCase();
+  const s=(i)=>this.toStr(args[i]); const n=(i)=>this.toNumber(args[i]);
+  switch(N){
+    case 'LENGTH': return s(0).length;
+    case 'SUBSTR': { const str=s(0); const start=Math.max(1,Math.round(n(1))); const len= args[2]!==undefined? Math.round(n(2)): str.length-start+1; return str.substr(start-1, Math.max(0,len)); }
+    case 'POS': return s(0)? (s(1).indexOf(s(0))+1):0;
+    case 'STRIP': { let str=s(0); const opt= args[1]!==undefined? s(1).toUpperCase():'B'; if(opt.startsWith('L')) return str.replace(/^\s+/,''); if(opt.startsWith('T')) return str.replace(/\s+$/,''); return str.trim(); }
+    case 'UPPER': return s(0).toUpperCase();
+    case 'LOWER': return s(0).toLowerCase();
+    case 'REVERSE': return s(0).split('').reverse().join('');
+    case 'WORD': { const w=s(0).trim().split(/\s+/).filter(Boolean); return w[Math.round(n(1))-1]||''; }
+    case 'WORDS': return s(0).trim()? s(0).trim().split(/\s+/).filter(Boolean).length:0;
+    case 'ABS': return Math.abs(n(0));
+    case 'MAX': return Math.max(...args.map((_,i)=>n(i)));
+    case 'MIN': return Math.min(...args.map((_,i)=>n(i)));
+    case 'TRUNC': { const d= args[1]!==undefined? Math.round(n(1)):0; const f=Math.pow(10,d); return Math.trunc(n(0)*f)/f; }
+    case 'RANDOM': { const lo= args[0]!==undefined? Math.round(n(0)):0; const hi= args[1]!==undefined? Math.round(n(1)):999; return lo+Math.floor(Math.random()*(hi-lo+1)); }
+    case 'DATE': return new Date().toISOString().slice(0,10);
+    case 'TIME': return new Date().toTimeString().slice(0,8);
+    case 'DATATYPE': { const v=s(0); return (v.trim()!=='' && !isNaN(parseFloat(v)) && isFinite(v))?'NUM':'CHAR'; }
+    case 'C2X': return Array.from(s(0)).map(ch=>ch.charCodeAt(0).toString(16).toUpperCase().padStart(2,'0')).join('');
+    case 'X2C': { const hex=s(0).replace(/\s+/g,''); let out=''; for(let i=0;i<hex.length;i+=2) out+=String.fromCharCode(parseInt(hex.substr(i,2),16)); return out; }
+    case 'COPIES': return s(0).repeat(Math.max(0,Math.round(n(1))));
+    case 'LEFT': { const str=s(0); const len=Math.round(n(1)); const pad= args[2]!==undefined? s(2):' '; return (str+pad.repeat(len)).substr(0,len); }
+    case 'RIGHT': { const str=s(0); const len=Math.round(n(1)); const pad= args[2]!==undefined? s(2):' '; return (pad.repeat(len)+str).slice(-len); }
+    case 'TRANSLATE': return args[1]!==undefined? s(0).split('').map(ch=>{ const idx=s(2).indexOf(ch); return idx>=0? (s(1)[idx]||''):ch; }).join(''): s(0).toUpperCase();
+    case 'SIGN': return Math.sign(n(0));
+    default: return '';
+  }
+};
+
+// =====================================================================
+// ------------------------------- DB2 ENGINE ----------------------------
+// Minimal in-memory SQL engine simulating a DB2 subsystem: CREATE/DROP
+// TABLE, INSERT, SELECT (WHERE + ORDER BY, AND-chained comparisons),
+// UPDATE, DELETE. Returns {sqlcode, message, rows, columns, rowsAffected}
+// using real-ish DB2 SQLCODEs (0 ok, 100 not found, -204 undefined name,
+// -601 already exists, -811 singleton-select multi-row, etc).
+// =====================================================================
+function DB2Engine(tables){ this.tables = tables || {}; }
+DB2Engine.prototype.splitTopLevel = function(str, sep){
+  let out=[], cur='', depth=0, q=null;
+  for(let i=0;i<str.length;i++){
+    const c=str[i];
+    if(q){ cur+=c; if(c===q) q=null; continue; }
+    if(c==="'"||c==='"'){ q=c; cur+=c; continue; }
+    if(c==='(') depth++;
+    if(c===')') depth--;
+    if(c===sep && depth===0){ out.push(cur); cur=''; }
+    else cur+=c;
+  }
+  out.push(cur);
+  return out.map(s=>s.trim()).filter(s=>s.length);
+};
+DB2Engine.prototype.parseValue = function(raw){
+  let v=raw.trim();
+  if(/^'.*'$/.test(v)) return v.slice(1,-1).replace(/''/g,"'");
+  if(/^-?\d+(\.\d+)?$/.test(v)) return parseFloat(v);
+  if(v.toUpperCase()==='NULL') return null;
+  return v;
+};
+DB2Engine.prototype.evalCond = function(row, condStr){
+  if(!condStr || !condStr.trim()) return true;
+  const parts = condStr.split(/\bAND\b/i).map(s=>s.trim());
+  for(const p of parts){
+    const m = p.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*(=|<>|!=|>=|<=|>|<)\s*(.+)$/);
+    if(!m) return false;
+    const col=m[1], op=m[2], rawVal=m[3];
+    const val=this.parseValue(rawVal);
+    const cell=row[col.toUpperCase()];
+    let ok; const bothNum = typeof cell==='number' && typeof val==='number';
+    switch(op){
+      case '=': ok= bothNum? cell===val : String(cell)===String(val); break;
+      case '<>': case '!=': ok= bothNum? cell!==val : String(cell)!==String(val); break;
+      case '>': ok= bothNum? cell>val : String(cell)>String(val); break;
+      case '<': ok= bothNum? cell<val : String(cell)<String(val); break;
+      case '>=': ok= bothNum? cell>=val : String(cell)>=String(val); break;
+      case '<=': ok= bothNum? cell<=val : String(cell)<=String(val); break;
+    }
+    if(!ok) return false;
+  }
+  return true;
+};
+DB2Engine.prototype.execute = function(sqlRaw){
+  const sql = sqlRaw.trim().replace(/;\s*$/,'');
+  const upper = sql.toUpperCase();
+
+  if(upper.startsWith('CREATE TABLE')){
+    const m = sql.match(/CREATE TABLE\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\((.*)\)\s*$/is);
+    if(!m) return {sqlcode:-104, message:'SYNTAX ERROR IN CREATE TABLE'};
+    const name=m[1].toUpperCase();
+    if(this.tables[name]) return {sqlcode:-601, message:name+' ALREADY EXISTS'};
+    const colDefs=this.splitTopLevel(m[2], ',');
+    const columns=colDefs.map(cd=>{
+      const cm=cd.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$/);
+      return {name: cm? cm[1].toUpperCase(): cd.toUpperCase(), type: cm? cm[2].trim().toUpperCase():'CHAR'};
+    });
+    this.tables[name] = {columns, rows:[]};
+    return {sqlcode:0, message:'DSNE617I CREATE TABLE ' + name + ' SUCCESSFUL'};
+  }
+  if(upper.startsWith('DROP TABLE')){
+    const name = sql.split(/\s+/)[2].toUpperCase();
+    if(!this.tables[name]) return {sqlcode:-204, message:name+' IS AN UNDEFINED NAME'};
+    delete this.tables[name];
+    return {sqlcode:0, message:'DSNE617I DROP TABLE ' + name + ' SUCCESSFUL'};
+  }
+  if(upper.startsWith('INSERT INTO')){
+    const m = sql.match(/INSERT INTO\s+([A-Za-z_][A-Za-z0-9_.]*)\s*(\(([^)]*)\))?\s*VALUES\s*\((.*)\)\s*$/is);
+    if(!m) return {sqlcode:-104, message:'SYNTAX ERROR IN INSERT'};
+    const name=m[1].toUpperCase(); const tbl=this.tables[name];
+    if(!tbl) return {sqlcode:-204, message:name+' IS AN UNDEFINED NAME'};
+    const colNames = m[3]? this.splitTopLevel(m[3], ',').map(c=>c.trim().toUpperCase()) : tbl.columns.map(c=>c.name);
+    const vals = this.splitTopLevel(m[4], ',').map(v=>this.parseValue(v));
+    if(colNames.length!==vals.length) return {sqlcode:-117, message:'NUMBER OF INSERT VALUES DOES NOT MATCH COLUMNS'};
+    const row={}; colNames.forEach((c,i)=>{ row[c]=vals[i]; });
+    tbl.rows.push(row);
+    return {sqlcode:0, message:'1 ROW INSERTED', rowsAffected:1};
+  }
+  if(upper.startsWith('SELECT')){
+    const m = sql.match(/SELECT\s+(.*?)\s+FROM\s+([A-Za-z_][A-Za-z0-9_.]*)\s*(WHERE\s+(.*?))?\s*(ORDER BY\s+(.*))?$/is);
+    if(!m) return {sqlcode:-104, message:'SYNTAX ERROR IN SELECT'};
+    const colsRaw=m[1].trim(); const name=m[2].toUpperCase(); const whereClause=m[4]; const orderClause=m[6];
+    const tbl=this.tables[name];
+    if(!tbl) return {sqlcode:-204, message:name+' IS AN UNDEFINED NAME'};
+    let rows = tbl.rows.filter(r=>this.evalCond(r, whereClause));
+    if(orderClause){
+      const om = orderClause.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)\s*(ASC|DESC)?$/i);
+      if(om){
+        const col=om[1].toUpperCase(); const desc=(om[2]||'').toUpperCase()==='DESC';
+        rows = rows.slice().sort((a,b)=> (a[col]>b[col]?1:a[col]<b[col]?-1:0));
+        if(desc) rows.reverse();
+      }
+    }
+    let columns;
+    if(colsRaw==='*') columns = tbl.columns.map(c=>c.name);
+    else columns = this.splitTopLevel(colsRaw, ',').map(c=>c.trim().toUpperCase());
+    const outRows = rows.map(r=>{ const o={}; columns.forEach(c=>o[c]=r[c]); return o; });
+    if(outRows.length===0) return {sqlcode:100, message:'ROW NOT FOUND', rows:[], columns};
+    return {sqlcode:0, message: outRows.length + ' ROW(S) SELECTED', rows: outRows, columns};
+  }
+  if(upper.startsWith('UPDATE')){
+    const m = sql.match(/UPDATE\s+([A-Za-z_][A-Za-z0-9_.]*)\s+SET\s+(.*?)\s*(WHERE\s+(.*))?$/is);
+    if(!m) return {sqlcode:-104, message:'SYNTAX ERROR IN UPDATE'};
+    const name=m[1].toUpperCase(); const tbl=this.tables[name];
+    if(!tbl) return {sqlcode:-204, message:name+' IS AN UNDEFINED NAME'};
+    const assigns = this.splitTopLevel(m[2], ',').map(a=>{
+      const am=a.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
+      return {col:am[1].toUpperCase(), val:this.parseValue(am[2])};
+    });
+    const whereClause=m[4]; let count=0;
+    tbl.rows.forEach(r=>{ if(this.evalCond(r, whereClause)){ assigns.forEach(a=>r[a.col]=a.val); count++; } });
+    return {sqlcode: count===0?100:0, message: count+' ROW(S) UPDATED', rowsAffected:count};
+  }
+  if(upper.startsWith('DELETE FROM') || upper.startsWith('DELETE ')){
+    const m = sql.match(/DELETE FROM\s+([A-Za-z_][A-Za-z0-9_.]*)\s*(WHERE\s+(.*))?$/is);
+    if(!m) return {sqlcode:-104, message:'SYNTAX ERROR IN DELETE'};
+    const name=m[1].toUpperCase(); const tbl=this.tables[name];
+    if(!tbl) return {sqlcode:-204, message:name+' IS AN UNDEFINED NAME'};
+    const whereClause=m[3]; const before=tbl.rows.length;
+    tbl.rows = tbl.rows.filter(r=>!this.evalCond(r, whereClause));
+    const count = before - tbl.rows.length;
+    return {sqlcode: count===0?100:0, message: count+' ROW(S) DELETED', rowsAffected:count};
+  }
+  return {sqlcode:-199, message:'UNSUPPORTED SQL STATEMENT: ' + sql.split(/\s+/)[0]};
+};
+
+// ADDRESS DB2 / EXECSQL host-command handler with cursor support (DECLARE/OPEN/FETCH/CLOSE),
+// singleton SELECT...INTO, and pass-through for INSERT/UPDATE/DELETE/CREATE/DROP.
+function makeDB2HostCommandHandler(db2engine){
+  return function db2HostCommandHandler(cmd, address, rexx){
+    const upperAddr=(address||'').toUpperCase();
+    if(upperAddr!=='DB2' && upperAddr!=='DSNREXX') return null;
+    const trimmed=cmd.trim();
+    const m0=trimmed.match(/^EXECSQL\s+(.*)$/is);
+    if(!m0) return {rc:12, output:['UNKNOWN DB2 COMMAND: ' + cmd]};
+    let sql=m0[1].trim();
+    let m = sql.match(/^DECLARE\s+([A-Za-z_][A-Za-z0-9_]*)\s+CURSOR\s+FOR\s+(.*)$/is);
+    if(m){ rexx.cursors[m[1].toUpperCase()] = {sql:m[2], rows:null, pos:0, open:false}; return {rc:0, output:[], setVars:{SQLCODE:0}}; }
+    m = sql.match(/^OPEN\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/i);
+    if(m){
+      const cur = rexx.cursors[m[1].toUpperCase()];
+      if(!cur) return {rc:-518, output:['CURSOR NOT DECLARED'], setVars:{SQLCODE:-518}};
+      const res = db2engine.execute(cur.sql);
+      if(res.sqlcode<0) return {rc:res.sqlcode, output:[res.message], setVars:{SQLCODE:res.sqlcode}};
+      cur.rows=res.rows||[]; cur.columns=res.columns||[]; cur.pos=0; cur.open=true;
+      return {rc:0, output:[], setVars:{SQLCODE:0}};
+    }
+    m = sql.match(/^FETCH\s+([A-Za-z_][A-Za-z0-9_]*)\s+INTO\s+(.*)$/is);
+    if(m){
+      const cur = rexx.cursors[m[1].toUpperCase()];
+      const hostVars = m[2].split(',').map(s=>s.trim().replace(/^:/,''));
+      if(!cur || !cur.open) return {rc:-501, output:['CURSOR NOT OPEN'], setVars:{SQLCODE:-501}};
+      if(cur.pos>=cur.rows.length) return {rc:100, output:[], setVars:{SQLCODE:100}};
+      const row=cur.rows[cur.pos++];
+      const setVars={SQLCODE:0};
+      hostVars.forEach((hv,i)=>{ setVars[hv]=row[cur.columns[i]]; });
+      return {rc:0, output:[], setVars};
+    }
+    m = sql.match(/^CLOSE\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/i);
+    if(m){ const cur=rexx.cursors[m[1].toUpperCase()]; if(cur) cur.open=false; return {rc:0, output:[], setVars:{SQLCODE:0}}; }
+    m = sql.match(/^SELECT\s+(.*?)\s+INTO\s+(.*?)\s+FROM\s+(.*)$/is);
+    if(m){
+      const hostVars = m[2].split(',').map(s=>s.trim().replace(/^:/,''));
+      const rebuilt = 'SELECT ' + m[1] + ' FROM ' + m[3];
+      const res = db2engine.execute(rebuilt);
+      if(res.sqlcode<0) return {rc:res.sqlcode, output:[res.message], setVars:{SQLCODE:res.sqlcode}};
+      if(!res.rows || res.rows.length===0) return {rc:100, output:[], setVars:{SQLCODE:100}};
+      if(res.rows.length>1) return {rc:-811, output:['RESULT OF SELECT INTO IS MORE THAN ONE ROW'], setVars:{SQLCODE:-811}};
+      const row=res.rows[0]; const setVars={SQLCODE:0};
+      hostVars.forEach((hv,i)=>{ setVars[hv]=row[res.columns[i]]; });
+      return {rc:0, output:[], setVars};
+    }
+    const res = db2engine.execute(sql);
+    return {rc:res.sqlcode, output: res.sqlcode<0? [res.message]:[], setVars:{SQLCODE:res.sqlcode}};
+  };
+}
+
+// =====================================================================
+// ------------------------------ STATE ---------------------------------
+// =====================================================================
+const screenEl = document.getElementById('screen');
+const editArea = document.getElementById('editArea');
+const cmdInput = document.getElementById('cmdinput');
+const pfbar = document.getElementById('pfbar');
+const hdrRight = document.getElementById('hdrRight');
+
+let STATE = { screen:'logon', currentMember:null, editStore:'members', jobCounter:1000, jobs:[], sdsfDetailIdx:null, userid:'MFUSER' };
+
+let MEMBERS = {};   // PDS "MFUSER.EXEC.LIBRARY": name -> {type:'REXX'|'JCL'|'TEXT', content:string}
+let DATASETS = {};  // catalog of PS datasets: dsn -> {records:[...]}
+let TABLES = {};    // DB2 catalog: tablename -> {columns:[{name,type}], rows:[{...}]}
+const db2 = new DB2Engine(TABLES);
+const db2HostCommandHandler = makeDB2HostCommandHandler(db2);
+function hostCommandHandler(cmd, address, rexx){
+  const upperAddr=(address||'').toUpperCase();
+  if(upperAddr==='DB2' || upperAddr==='DSNREXX') return db2HostCommandHandler(cmd, address, rexx);
+  return tsoHostCommandHandler(cmd, address, rexx);
+}
+
+const DEFAULT_MEMBERS = {
+  'HELLO': {type:'REXX', content:
+`/* REXX ****************************************/
+/* Simple hello world                            */
+/**************************************************/
+SAY 'HELLO, MAINFRAME WORLD!'
+name = 'REXX'
+SAY 'RUNNING ON' name 'VIA THE 3270 EMULATOR'
+DO i = 1 TO 3
+  SAY 'ITERATION' i
+END
+EXIT 0`},
+  'SUMNUM': {type:'REXX', content:
+`/* REXX - sum numbers 1..N, passed as ARG ******/
+ARG n
+IF n = '' THEN n = 10
+total = 0
+DO i = 1 TO n
+  total = total + i
+END
+SAY 'SUM OF 1 TO' n '=' total
+EXIT 0`},
+  'FIZZBUZZ': {type:'REXX', content:
+`/* REXX - classic FizzBuzz to 20 ***************/
+DO i = 1 TO 20
+  IF i // 15 = 0 THEN SAY 'FIZZBUZZ'
+  ELSE IF i // 3 = 0 THEN SAY 'FIZZ'
+  ELSE IF i // 5 = 0 THEN SAY 'BUZZ'
+  ELSE SAY i
+END
+EXIT 0`},
+  'READFILE': {type:'REXX', content:
+`/* REXX - read a dataset with ADDRESS TSO / EXECIO, like real TSO REXX */
+ADDRESS TSO
+"ALLOC DD(IN) DSN('MFUSER.TEST.DATA') SHR"
+"EXECIO * DISKR IN (STEM LINE. FINIS"
+SAY 'READ' LINE.0 'RECORDS FROM MFUSER.TEST.DATA:'
+DO i = 1 TO LINE.0
+  SAY '  ' i ':' LINE.i
+END
+"FREE DD(IN)"
+EXIT 0`},
+  'WRITEFILE': {type:'REXX', content:
+`/* REXX - write a new dataset with ADDRESS TSO / EXECIO */
+ADDRESS TSO
+"ALLOC DD(OUT) DSN('MFUSER.REXX.OUTPUT') NEW"
+OUT.1 = 'LINE WRITTEN BY REXX'
+OUT.2 = 'CURRENT DATE:' DATE()
+OUT.3 = 'CURRENT TIME:' TIME()
+OUT.0 = 3
+"EXECIO * DISKW OUT (STEM OUT. FINIS"
+"FREE DD(OUT)"
+SAY 'WROTE' OUT.0 'RECORDS TO MFUSER.REXX.OUTPUT'
+SAY 'CHECK OPTION 6 (DATASETS) TO BROWSE IT'
+EXIT 0`},
+  'RUNIT': {type:'JCL', content:
+`//RUNIT    JOB (ACCT),'RUN REXX',CLASS=A,MSGCLASS=X
+//*
+//STEP1    EXEC PGM=IKJEFT01,PARM='%HELLO'
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//SYSEXEC  DD DSN=MFUSER.REXX.EXEC,DISP=SHR
+//`},
+  'IEFBR14': {type:'JCL', content:
+`//IEFBR14  JOB (ACCT),'ALLOC TEST',CLASS=A,MSGCLASS=X
+//*
+//STEP1    EXEC PGM=IEFBR14
+//DD1      DD DSN=MFUSER.TEST.DATA2,
+//            DISP=(NEW,CATLG,DELETE),
+//            SPACE=(TRK,(1,1)),
+//            UNIT=SYSDA
+//`},
+  'PIPELINE': {type:'JCL', content:
+`//PIPELIN  JOB (ACCT),'MULTI-STEP PIPELINE',CLASS=A,MSGCLASS=X
+//*  Demonstrates IEBGENER + SORT + a REXX step, chained through
+//*  cataloged datasets, with a COND= that skips STEP3 if STEP2 failed.
+//STEP1    EXEC PGM=IEBGENER
+//SYSUT1   DD *
+ZEBRA RECORD
+APPLE RECORD
+MANGO RECORD
+CHERRY RECORD
+//SYSUT2   DD DSN=MFUSER.PIPE.RAW,DISP=(NEW,CATLG,DELETE)
+//SYSPRINT DD SYSOUT=*
+//STEP2    EXEC PGM=SORT
+//SORTIN   DD DSN=MFUSER.PIPE.RAW,DISP=SHR
+//SORTOUT  DD DSN=MFUSER.PIPE.SORTED,DISP=(NEW,CATLG,DELETE)
+//SYSIN    DD *
+  SORT FIELDS=(1,10,CH,A)
+//STEP3    EXEC PGM=IKJEFT01,PARM='%HELLO',COND=(4,LT)
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//`},
+  'RUNREAD': {type:'JCL', content:
+`//RUNREAD  JOB (ACCT),'RUN READFILE',CLASS=A,MSGCLASS=X
+//*  Runs READFILE.  Note: MFUSER.TEST.DATA must exist first --
+//*  see option 6 (DATASETS) which seeds it by default.
+//STEP1    EXEC PGM=IKJEFT01,PARM='%READFILE'
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//`},
+  'DB2QUERY': {type:'REXX', content:
+`/* REXX - ADDRESS DB2 with a cursor, classic embedded-SQL pattern */
+ADDRESS DB2
+"EXECSQL DECLARE C1 CURSOR FOR SELECT EMPNO, NAME, DEPT, SALARY FROM EMP ORDER BY SALARY DESC"
+"EXECSQL OPEN C1"
+SAY 'EMPLOYEES BY SALARY:'
+DO WHILE SQLCODE = 0
+  "EXECSQL FETCH C1 INTO :EMPNO, :NAME, :DEPT, :SALARY"
+  IF SQLCODE = 0 THEN
+    SAY '  ' EMPNO NAME DEPT SALARY
+END
+"EXECSQL CLOSE C1"
+EXIT 0`},
+  'DB2UPDT': {type:'REXX', content:
+`/* REXX - singleton SELECT INTO, INSERT, UPDATE via ADDRESS DB2 */
+ADDRESS DB2
+"EXECSQL SELECT NAME INTO :WHO FROM EMP WHERE EMPNO = 10"
+SAY 'LOOKUP EMPNO 10:' WHO '  SQLCODE=' SQLCODE
+"EXECSQL INSERT INTO EMP (EMPNO, NAME, DEPT, SALARY) VALUES (40, 'FRANK', 'D02', 51000)"
+SAY 'INSERT SQLCODE=' SQLCODE
+"EXECSQL UPDATE EMP SET SALARY = SALARY + 1000 WHERE DEPT = 'D01'"
+SAY 'GAVE D01 A RAISE, SQLCODE=' SQLCODE
+EXIT 0`},
+  'RUNDB2': {type:'JCL', content:
+`//RUNDB2   JOB (ACCT),'RUN DB2 REXX',CLASS=A,MSGCLASS=X
+//*  Runs DB2QUERY, which uses ADDRESS DB2 / EXECSQL against the
+//*  EMP table (pre-seeded - see option 7, DB2).
+//STEP1    EXEC PGM=IKJEFT01,PARM='%DB2QUERY'
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//`},
+  'SQLBATCH': {type:'JCL', content:
+`//SQLBATCH JOB (ACCT),'BATCH SQL VIA DSNTEP2',CLASS=A,MSGCLASS=X
+//*  DSNTEP2 is IBM's classic sample batch dynamic-SQL program:
+//*  it reads semicolon-terminated SQL statements from SYSIN and
+//*  prints a report to SYSPRINT.  Simulated here the same way.
+//STEP1    EXEC PGM=DSNTEP2
+//SYSPRINT DD SYSOUT=*
+//SYSIN    DD *
+  SELECT * FROM EMP;
+  SELECT DEPTNO, DEPTNAME FROM DEPT;
+  INSERT INTO EMP (EMPNO, NAME, DEPT, SALARY) VALUES (50, 'GRACE', 'D03', 58000);
+  SELECT * FROM EMP WHERE DEPT = 'D03';
+/*
+//`},
+};
+
+const DEFAULT_DATASETS = {
+  'MFUSER.TEST.DATA': { records: ['FIRST TEST RECORD', 'SECOND TEST RECORD', 'THIRD TEST RECORD'] }
+};
+
+const DEFAULT_TABLES = {
+  'EMP': {
+    columns: [{name:'EMPNO',type:'INTEGER'},{name:'NAME',type:'CHAR(20)'},{name:'DEPT',type:'CHAR(4)'},{name:'SALARY',type:'DECIMAL(9,2)'}],
+    rows: [
+      {EMPNO:10, NAME:'ALICE', DEPT:'D01', SALARY:55000},
+      {EMPNO:20, NAME:'BOB',   DEPT:'D02', SALARY:62000},
+      {EMPNO:30, NAME:'CAROL', DEPT:'D01', SALARY:71000},
+    ]
+  },
+  'DEPT': {
+    columns: [{name:'DEPTNO',type:'CHAR(3)'},{name:'DEPTNAME',type:'CHAR(20)'}],
+    rows: [
+      {DEPTNO:'D01', DEPTNAME:'ACCOUNTING'},
+      {DEPTNO:'D02', DEPTNAME:'MARKETING'},
+    ]
+  }
+};
+
+// ---------------------------------------------------------------------
+// FOLDER CONNECTION (File System Access API - Chrome/Edge/Chromium only)
+// Optional, strictly-better storage tier: pick a real folder on disk and
+// every save writes a real, human-readable mf3270-session.json file into
+// it -- no export/import needed, and you can point a new browser/laptop
+// at that same folder (e.g. if it's in Dropbox/OneDrive/a synced drive)
+// to pick up right where you left off. The folder handle is remembered
+// in IndexedDB; browsers require a fresh click to re-grant permission on
+// a later visit (they won't silently hand out disk access), so that one
+// step -- typing RECONNECT -- can't be fully automatic, but the folder
+// itself, once granted, is used automatically for the rest of that visit.
+// Falls back cleanly to localStorage (see below) when unsupported/unused.
+// ---------------------------------------------------------------------
+const IDB_NAME = 'mf3270-fsa';
+const IDB_STORE = 'handles';
+const SESSION_FILENAME = 'mf3270-session.json';
+const FSA_SUPPORTED = typeof window !== 'undefined' && !!window.showDirectoryPicker;
+let DIR_HANDLE = null;
+let PENDING_RECONNECT_HANDLE = null;
+let PENDING_RECONNECT_NAME = null;
+
+function idbOpen(){
+  return new Promise((resolve, reject)=>{
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = ()=>{ req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error);
+  });
+}
+async function idbGet(key){
+  const db = await idbOpen();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error);
+  });
+}
+async function idbSet(key, val){
+  const db = await idbOpen();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(val, key);
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+async function idbDelete(key){
+  const db = await idbOpen();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+async function writeFolderSession(){
+  if(!DIR_HANDLE) return;
+  try{
+    const fileHandle = await DIR_HANDLE.getFileHandle(SESSION_FILENAME, {create:true});
+    const writable = await fileHandle.createWritable();
+    await writable.write(JSON.stringify(currentSessionBlob(), null, 2));
+    await writable.close();
+  }catch(e){ console.error('folder write failed', e); }
+}
+async function readFolderSession(){
+  if(!DIR_HANDLE) return null;
+  try{
+    const fileHandle = await DIR_HANDLE.getFileHandle(SESSION_FILENAME, {create:false});
+    const file = await fileHandle.getFile();
+    return JSON.parse(await file.text());
+  }catch(e){ return null; }
+}
+async function connectFolder(){
+  if(!FSA_SUPPORTED){
+    appendResultScreen('CONNECT FOLDER', [
+      {text:'This browser does not support folder access (the File System Access API).', cls:'amber'},
+      {text:'On desktop that means Chrome, Edge, or another Chromium browser, not Firefox/Safari.'},
+      {text:'On mobile, no browser supports it yet (including Chrome for Android) -- there'},
+      {text:'is no system folder picker it can hook into.'},
+      {text:'Your session will keep saving to this device\'s local storage instead, which'},
+      {text:'persists across closing/reopening the app. Use EXPORT / IMPORT to move a'},
+      {text:'session to another device.'},
+    ]);
+    return;
+  }
+  let handle;
+  try{ handle = await window.showDirectoryPicker({mode:'readwrite'}); }
+  catch(e){
+    if(e && e.name === 'AbortError') return; // user cancelled the picker, no message needed
+    appendResultScreen('CONNECT FOLDER FAILED', [{text:'Could not connect: ' + e.message, cls:'red'}]);
+    return;
+  }
+  DIR_HANDLE = handle;
+  try{ await idbSet('sessionDir', handle); }catch(e){ /* ignore - still works for this visit */ }
+  const blob = await readFolderSession();
+  if(blob) applySessionBlob(blob); else await writeFolderSession();
+  PENDING_RECONNECT_HANDLE = null;
+  appendResultScreen('FOLDER CONNECTED', [
+    {text:'Connected to folder: ' + handle.name, cls:'green'},
+    {text:''},
+    {text:(blob? 'Loaded an existing session from ' : 'Created a new ') + SESSION_FILENAME + ' in that folder.'},
+    {text:'From now on, everything you do saves there in real time.'},
+    {text:'Point another Chrome/Edge browser at the same folder (e.g. a synced'},
+    {text:'Dropbox/OneDrive folder) and CONNECT there too to share this session.'},
+  ]);
+}
+async function disconnectFolder(){
+  DIR_HANDLE = null;
+  try{ await idbDelete('sessionDir'); }catch(e){}
+  appendResultScreen('FOLDER DISCONNECTED', [{text:'Back to saving in this browser\'s local storage only.'}]);
+}
+async function tryReconnectStoredFolder(){
+  if(!FSA_SUPPORTED) return false;
+  let handle;
+  try{ handle = await idbGet('sessionDir'); }catch(e){ return false; }
+  if(!handle) return false;
+  try{
+    const perm = await handle.queryPermission({mode:'readwrite'});
+    if(perm === 'granted'){ DIR_HANDLE = handle; return true; }
+    PENDING_RECONNECT_HANDLE = handle;
+    PENDING_RECONNECT_NAME = handle.name;
+    return false;
+  }catch(e){ return false; }
+}
+async function reconnectPending(){
+  if(!PENDING_RECONNECT_HANDLE){ appendResultScreen('RECONNECT', [{text:'No previously connected folder to reconnect to.'}]); return; }
+  const handle = PENDING_RECONNECT_HANDLE;
+  try{
+    const perm = await handle.requestPermission({mode:'readwrite'});
+    if(perm !== 'granted'){ appendResultScreen('RECONNECT', [{text:'Permission was not granted.'}]); return; }
+    DIR_HANDLE = handle;
+    PENDING_RECONNECT_HANDLE = null;
+    const blob = await readFolderSession();
+    if(blob) applySessionBlob(blob);
+    appendResultScreen('FOLDER RECONNECTED', [{text:'Reconnected to folder: ' + handle.name, cls:'green'}, {text:'Session restored from ' + SESSION_FILENAME + '.'}]);
+  }catch(e){
+    appendResultScreen('RECONNECT FAILED', [{text:e.message, cls:'red'}]);
+  }
+}
+
+// ---------------------------------------------------------------------
+// PERSISTENCE
+// Three tiers, in priority order:
+//   1. Connected folder (see above) -- real files on disk, if you've
+//      used CONNECT. Most durable and the only one that's inspectable
+//      and shareable between browsers/machines without a manual step.
+//   2. Browser localStorage, under one key holding the whole session.
+//      Automatic, no setup, but tied to this one browser profile/machine.
+//   3. The artifact key-value storage API, when running inside Claude.ai --
+//      a best-effort mirror so state also follows your Claude account.
+// EXPORT / IMPORT (a downloadable .json snapshot) remain available as a
+// manual fallback that works everywhere, with none of the above.
+// ---------------------------------------------------------------------
+const LS_KEY = 'mf3270_session_v1';
+
+function currentSessionBlob(){
+  return {
+    savedAt: new Date().toISOString(),
+    members: MEMBERS,
+    datasets: DATASETS,
+    tables: TABLES,
+    jobCounter: STATE.jobCounter,
+  };
+}
+function applySessionBlob(blob){
+  MEMBERS = blob.members || JSON.parse(JSON.stringify(DEFAULT_MEMBERS));
+  DATASETS = blob.datasets || JSON.parse(JSON.stringify(DEFAULT_DATASETS));
+  TABLES = blob.tables || JSON.parse(JSON.stringify(DEFAULT_TABLES));
+  db2.tables = TABLES;
+  STATE.jobCounter = blob.jobCounter || 1000;
+}
+function safeParse(str, fallback){ try{ return JSON.parse(str); }catch(e){ return JSON.parse(JSON.stringify(fallback)); } }
+
+async function loadState(){
+  const folderReconnected = await tryReconnectStoredFolder();
+  if(folderReconnected){
+    const blob = await readFolderSession();
+    if(blob) applySessionBlob(blob); else { applySessionBlob({}); await writeFolderSession(); }
+    return;
+  }
+  // Not on a connected folder (not supported, never connected, or this
+  // browser needs a fresh RECONNECT click) -- fall back to localStorage.
+  let fromLocal = null;
+  try{
+    const raw = window.localStorage && window.localStorage.getItem(LS_KEY);
+    if(raw) fromLocal = safeParse(raw, null);
+  }catch(e){ /* localStorage unavailable (e.g. private mode) - fall through */ }
+
+  if(fromLocal){
+    applySessionBlob(fromLocal);
+    return;
+  }
+
+  // No local copy yet -- try to migrate from the older Claude.ai-only
+  // artifact storage (used by earlier versions of this tool), then seed
+  // defaults if that's empty too.
+  if(!window.storage){
+    applySessionBlob({});
+    saveState();
+    return;
+  }
+  const p1 = window.storage.get('mf3270:members', false).then(r=>r&&r.value).catch(()=>null);
+  const p2 = window.storage.get('mf3270:datasets', false).then(r=>r&&r.value).catch(()=>null);
+  const [m,d] = await Promise.all([p1,p2]);
+  applySessionBlob({
+    members: m ? safeParse(m, DEFAULT_MEMBERS) : JSON.parse(JSON.stringify(DEFAULT_MEMBERS)),
+    datasets: d ? safeParse(d, DEFAULT_DATASETS) : JSON.parse(JSON.stringify(DEFAULT_DATASETS)),
+    tables: JSON.parse(JSON.stringify(DEFAULT_TABLES)),
+  });
+  saveState();
+}
+
+function saveState(){
+  const blob = currentSessionBlob();
+  const json = JSON.stringify(blob);
+  try{ window.localStorage && window.localStorage.setItem(LS_KEY, json); }catch(e){ /* quota / private mode */ }
+  if(window.storage){
+    // best-effort mirror so it also follows the Claude.ai account
+    window.storage.set('mf3270:session', json, false).catch(()=>{});
+  }
+  if(DIR_HANDLE){
+    // best-effort real-file write; fire-and-forget so typing stays snappy
+    writeFolderSession().catch(()=>{});
+  }
+}
+// Kept as distinct names (called throughout the app after each mutation)
+// but they all just persist the whole session now.
+function saveMembers(){ saveState(); }
+function saveDatasets(){ saveState(); }
+function saveTables(){ saveState(); }
+
+function exportSession(){
+  const blob = currentSessionBlob();
+  const json = JSON.stringify(blob, null, 2);
+  const file = new Blob([json], {type:'application/json'});
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  a.href = url;
+  a.download = 'mf3270-session-' + stamp + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 5000);
+}
+function importSessionFromFile(file){
+  const reader = new FileReader();
+  reader.onload = () => {
+    try{
+      const blob = JSON.parse(reader.result);
+      if(!blob || typeof blob !== 'object') throw new Error('not a session file');
+      applySessionBlob(blob);
+      saveState();
+      appendResultScreen('IMPORT', [
+        {text:'Session imported successfully.'},
+        {text:'Members: ' + Object.keys(MEMBERS).length + '   Datasets: ' + Object.keys(DATASETS).length + '   DB2 tables: ' + Object.keys(TABLES).length},
+      ]);
+    }catch(e){
+      appendResultScreen('IMPORT FAILED', [{text:'Could not read that file as a session export: ' + e.message, cls:'red'}]);
+    }
+  };
+  reader.onerror = () => appendResultScreen('IMPORT FAILED', [{text:'Could not read the selected file.', cls:'red'}]);
+  reader.readAsText(file);
+}
+
+// =====================================================================
+// ------------------------------ RENDER --------------------------------
+// =====================================================================
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function line(text, cls){ return '<div' + (cls? ' class="'+cls+'"':'') + '>' + (esc(text)||'&nbsp;') + '</div>'; }
+function setScreen(html){ screenEl.innerHTML = html; screenEl.scrollTop = 0; }
+function setPF(keys){
+  pfbar.innerHTML = '';
+  keys.forEach(k=>{
+    const b=document.createElement('button');
+    b.className='pfkey'; b.textContent = k.label;
+    b.onclick = ()=>{ handleCommand(k.cmd); };
+    pfbar.appendChild(b);
+  });
+}
+function updateHeader(){
+  const folderTag = DIR_HANDLE ? ('[FOLDER: ' + DIR_HANDLE.name + ']') : '[BROWSER STORAGE]';
+  hdrRight.textContent = folderTag + '  ' + STATE.userid + '  ' + new Date().toTimeString().slice(0,8);
+}
+setInterval(updateHeader, 1000);
+
+// =====================================================================
+// ---------------------------- SCREENS ---------------------------------
+// =====================================================================
+function showLogon(){
+  STATE.screen='logon';
+  let h='';
+  h+=line('','');
+  h+=line('                         z / O S   T S O / E   L O G O N','white');
+  h+=line('','');
+  h+=line('  Licensed Materials - Property of "Anthropic Demo Systems"','dim');
+  h+=line('  5752-SC1  (C) COPYRIGHT ANTHROPIC CORP - SIMULATED MAINFRAME','dim');
+  h+=line('','');
+  h+=line('  USERID   ===&gt; MFUSER','amber');
+  h+=line('  PASSWORD ===&gt; ********       (not checked - demo mode)','amber');
+  h+=line('  PROCEDURE===&gt; ISPFPROC','amber');
+  h+=line('','');
+  h+=line('  Enter LOGON to continue, or type HELP for an overview.','blue');
+  h+=line('','');
+  if(DIR_HANDLE){
+    h+=line('  STORAGE: connected to folder "' + DIR_HANDLE.name + '" - saving real files there.','green');
+  } else if(PENDING_RECONNECT_HANDLE){
+    h+=line('  STORAGE: this browser was connected to folder "' + PENDING_RECONNECT_NAME + '" before.','amber');
+    h+=line('  Type RECONNECT to restore access to it (one click, browser security).','amber');
+  } else if(FSA_SUPPORTED){
+    h+=line('  STORAGE: browser local storage only. Type CONNECT to pick a real folder','dim');
+    h+=line('  on disk instead - see SETTINGS (option 0) once logged on for details.','dim');
+  } else {
+    h+=line('  STORAGE: browser local storage (this browser only supports that mode).','dim');
+  }
+  h+=line('','');
+  h+=line('  Simulated 3270/TSO/ISPF environment: real REXX interpreter,','dim');
+  h+=line('  a JCL/JES batch simulator (IEBGENER, IDCAMS, SORT, IKJEFT01),','dim');
+  h+=line('  a dataset catalog, and ADDRESS TSO / EXECIO from REXX.','dim');
+  setScreen(h);
+  setPF([{label:'ENTER = LOGON', cmd:'LOGON'},{label:'HELP', cmd:'HELP'}, DIR_HANDLE? {label:'DISCONNECT', cmd:'DISCONNECT'} : (PENDING_RECONNECT_HANDLE? {label:'RECONNECT', cmd:'RECONNECT'} : {label:'CONNECT FOLDER', cmd:'CONNECT'})]);
+  cmdInput.placeholder='Type LOGON and press Enter...';
+}
+
+function showPrimaryMenu(){
+  STATE.screen='menu';
+  let h='';
+  h+=line('MFUSER1   -------------  ISPF PRIMARY OPTION MENU  -------------','white');
+  h+=line('OPTION ===&gt;','amber');
+  h+=line('','');
+  h+=line('  0  SETTINGS     - Terminal / user parameters','green');
+  h+=line('  1  LIBRARY      - Browse your PDS (REXX execs, JCL, text members)','green');
+  h+=line('  2  EDIT         - Edit or create a member','green');
+  h+=line('  3  RUN REXX     - Execute a REXX exec directly (like TSO EXEC)','green');
+  h+=line('  4  SUBMIT JCL   - Submit a JCL member as a batch job','green');
+  h+=line('  5  SDSF         - View the job queue and job logs','green');
+  h+=line('  6  DATASETS     - Browse/allocate/edit cataloged datasets (PS)','green');
+  h+=line('  7  DB2          - SPUFI: run ad-hoc SQL against DB2 tables','green');
+  h+=line('  8  COMMAND      - TSO-style command line','green');
+  h+=line('  X  EXIT         - Log off','green');
+  h+=line('','');
+  h+=line('  Type an option number/letter at OPTION ===&gt; and press Enter,','dim');
+  h+=line('  or type a command directly (EX HELLO, SUBMIT PIPELINE, LIST).','dim');
+  h+=line('  EXPORT / IMPORT work from anywhere - see option 0 for details.','dim');
+  setScreen(h);
+  setPF([
+    {label:'PF1 LIBRARY', cmd:'1'},{label:'PF2 EDIT', cmd:'2'},{label:'PF3 RUN REXX', cmd:'3'},
+    {label:'PF4 SUBMIT', cmd:'4'},{label:'PF5 SDSF', cmd:'5'},{label:'PF6 DATASETS', cmd:'6'},
+    {label:'PF7 DB2', cmd:'7'},{label:'PF8 CMD', cmd:'8'},{label:'PF12 EXIT', cmd:'X'}
+  ]);
+  cmdInput.placeholder='Option ===>';
+}
+
+function showLibrary(){
+  STATE.screen='library';
+  let h='';
+  h+=line('MFUSER.EXEC.LIBRARY   ---------  MEMBER LIST  ---------','white');
+  h+=line('COMMAND ===&gt;                                    ROW 1 TO ' + Object.keys(MEMBERS).length,'amber');
+  h+=line('','');
+  h+=line('  NAME        TYPE    LINES   ACTION','dim');
+  const names = Object.keys(MEMBERS).sort();
+  if(names.length===0) h+=line('  (empty - use EDIT to create a member)','dim');
+  names.forEach(nm=>{
+    const m = MEMBERS[nm];
+    const lines = m.content.split('\n').length;
+    h += line('  ' + nm.padEnd(12) + m.type.padEnd(8) + String(lines).padEnd(8) + (m.type==='REXX'?'(EX to run)':m.type==='JCL'?'(SUB to submit)':''), 'green');
+  });
+  h+=line('','');
+  h+=line('  Commands: E name (edit)   EX name (run REXX)   SUB name (submit JCL)','blue');
+  h+=line('            DEL name (delete)   NEW name TYPE (create; TYPE=REXX/JCL/TEXT)','blue');
+  h+=line('            M (main menu)','blue');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'},{label:'PF12 MENU', cmd:'M'}]);
+  cmdInput.placeholder='Command ===>';
+}
+
+function showEditor(name, isNew, store, suggestedType){
+  store = store || 'members';
+  STATE.screen='edit';
+  STATE.currentMember = name;
+  STATE.editStore = store;
+  let content, typeLabel;
+  if(store==='members'){
+    const m = MEMBERS[name] || {type: suggestedType||'REXX', content: suggestedType==='JCL'? '//'+name.padEnd(8)+' JOB (ACCT),\'JOB\',CLASS=A,MSGCLASS=X\n//*\n//STEP1    EXEC PGM=IEFBR14\n//' : '/* REXX ' + '*'.repeat(40) + '*/\nSAY \'HELLO\'\nEXIT 0'};
+    if(isNew) MEMBERS[name] = m;
+    content = m.content; typeLabel = m.type;
+  } else {
+    const d = DATASETS[name] || {records: []};
+    if(isNew) DATASETS[name] = d;
+    content = d.records.join('\n'); typeLabel = 'PS (SEQUENTIAL)';
+  }
+  let h='';
+  h+=line('EDIT       ' + name + '   (' + typeLabel + ')' + (isNew? '  -- NEW --':''),'white');
+  h+=line('COMMAND ===&gt;                                                     SCROLL ===&gt; CSR','amber');
+  setScreen(h);
+  editArea.style.display='block';
+  editArea.value = content;
+  editArea.focus();
+  setPF([
+    {label:'PF3 SAVE+EXIT', cmd:'__SAVE_EXIT__'},
+    {label:'PF5 SAVE+RUN', cmd:'__SAVE_RUN__'},
+    {label:'PF12 CANCEL', cmd:'__CANCEL__'}
+  ]);
+  cmdInput.placeholder='PF3=Save & Exit   PF5=Save & Run   PF12=Cancel (typed here also works)';
+}
+function hideEditorUI(){ editArea.style.display='none'; }
+
+function showRunRexxPrompt(){
+  STATE.screen='runrexx';
+  let h='';
+  h+=line('RUN REXX EXEC','white');
+  h+=line('COMMAND ===&gt;','amber');
+  h+=line('','');
+  const rexxMembers = Object.keys(MEMBERS).filter(n=>MEMBERS[n].type==='REXX').sort();
+  h+=line('  Available REXX members:','dim');
+  rexxMembers.forEach(n=>h+=line('    ' + n, 'green'));
+  h+=line('','');
+  h+=line('  Type:  EX &lt;member&gt; [arguments...]','blue');
+  h+=line('  e.g.   EX SUMNUM 25','blue');
+  h+=line('  e.g.   EX READFILE      (uses ADDRESS TSO / EXECIO)','blue');
+  h+=line('','');
+  h+=line('  M = main menu','dim');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='EX <member> [args]';
+}
+
+function showSubmitPrompt(){
+  STATE.screen='submit';
+  let h='';
+  h+=line('SUBMIT JCL JOB','white');
+  h+=line('COMMAND ===&gt;','amber');
+  h+=line('','');
+  const jclMembers = Object.keys(MEMBERS).filter(n=>MEMBERS[n].type==='JCL').sort();
+  h+=line('  Available JCL members:','dim');
+  jclMembers.forEach(n=>h+=line('    ' + n, 'green'));
+  h+=line('','');
+  h+=line('  Type:  SUB &lt;member&gt;','blue');
+  h+=line('  e.g.   SUB PIPELINE     (IEBGENER + SORT + REXX, chained via datasets)','blue');
+  h+=line('','');
+  h+=line('  M = main menu','dim');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='SUB <member>';
+}
+
+function showSDSF(){
+  STATE.screen='sdsf';
+  STATE.sdsfDetailIdx = null;
+  let h='';
+  h+=line('SDSF  ---------------------  JOB QUEUE  ---------------------','white');
+  h+=line('COMMAND ===&gt;','amber');
+  h+=line('','');
+  h+=line('  JOBNAME     JOBID     OWNER    RC     STATUS','dim');
+  if(STATE.jobs.length===0){
+    h+=line('  No jobs submitted yet this session. Use option 4 (SUBMIT JCL).','dim');
+  } else {
+    STATE.jobs.forEach((j,idx)=>{
+      const rcStr = j.rc===null? '----' : String(j.rc).padStart(4,'0');
+      h += line('  ' + String(idx+1).padStart(2,'0') + ' ' + j.name.padEnd(11) + j.jobid.padEnd(10) + STATE.userid.padEnd(9) + rcStr.padEnd(7) + (j.rc>0?'RC>0 - CHECK LOG':'ENDED - CC 0000'), j.rc>0?'amber':'green');
+    });
+  }
+  h+=line('','');
+  h+=line('  Commands: S n  (show job log for row n)     M (main menu)','blue');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='S <n> to view a job log, or M for menu';
+}
+
+function showSDSFDetail(idx){
+  const j = STATE.jobs[idx];
+  if(!j){ showSDSF(); return; }
+  STATE.screen='sdsf';
+  STATE.sdsfDetailIdx = idx;
+  let h='';
+  h+=line('SDSF  ------------  JOB LOG: ' + j.name + ' (' + j.jobid + ')  ------------','white');
+  h+=line('COMMAND ===&gt;','amber');
+  h+=line('','');
+  j.log.forEach(l=>h+=line(l.text, l.cls||'green'));
+  h+=line('','');
+  h+=line('  Q = back to job queue     M = main menu','blue');
+  setScreen(h);
+  setPF([{label:'PF3 QUEUE', cmd:'Q'},{label:'PF12 MENU', cmd:'M'}]);
+  cmdInput.placeholder='Q for queue, M for menu';
+}
+
+function showDatasets(){
+  STATE.screen='datasets';
+  let h='';
+  h+=line('DATASET CATALOG   ---------  MFUSER  ---------','white');
+  h+=line('COMMAND ===&gt;                                    ROW 1 TO ' + Object.keys(DATASETS).length,'amber');
+  h+=line('','');
+  h+=line('  DSNAME                          TYPE  RECORDS','dim');
+  const names = Object.keys(DATASETS).sort();
+  if(names.length===0) h+=line('  (catalog is empty - use ALLOC to create a dataset)','dim');
+  names.forEach(nm=>{
+    h += line('  ' + nm.padEnd(32) + 'PS    ' + DATASETS[nm].records.length, 'green');
+  });
+  h+=line('','');
+  h+=line('  Commands: ALLOC dsn   BROWSE dsn   EDIT dsn   DEL dsn','blue');
+  h+=line('            M (main menu)','blue');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='Command ===>';
+}
+
+function showBrowseDataset(name){
+  const d = DATASETS[name];
+  if(!d){ appendResultScreen('BROWSE', [{text:'Dataset not found: ' + name}]); return; }
+  let h='';
+  h+=line('BROWSE     ' + name + '   (' + d.records.length + ' records)','white');
+  h+=line('COMMAND ===&gt;','amber');
+  h+=line('','');
+  if(d.records.length===0) h+=line('  (empty dataset)','dim');
+  d.records.forEach((r,i)=>h+=line(String(i+1).padStart(6) + '  ' + r,'green'));
+  h+=line('','');
+  h+=line('  M = main menu   (this is read-only; use EDIT to change it)','dim');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  STATE.screen='result';
+  cmdInput.placeholder='Command ===>';
+}
+
+function showSPUFI(resultLines){
+  STATE.screen='spufi';
+  let h='';
+  h+=line('DB2I  ------------------  SPUFI (AD-HOC SQL)  ------------------','white');
+  h+=line('SQL ===&gt;','amber');
+  h+=line('','');
+  const names = Object.keys(TABLES).sort();
+  h+=line('  Tables: ' + (names.length? names.map(n=>n+'('+TABLES[n].rows.length+')').join('  ') : '(none - CREATE TABLE to add one)'), 'dim');
+  h+=line('','');
+  if(resultLines){
+    resultLines.forEach(l=>h+=line(l.text!==undefined? l.text : l, l.cls||'green'));
+    h+=line('','');
+  } else {
+    h+=line('  Type any SQL statement and press Enter:','blue');
+    h+=line('    SELECT * FROM EMP','blue');
+    h+=line('    SELECT NAME, SALARY FROM EMP WHERE DEPT = \'D01\' ORDER BY SALARY DESC','blue');
+    h+=line('    INSERT INTO EMP (EMPNO,NAME,DEPT,SALARY) VALUES (99,\'ZOE\',\'D03\',49000)','blue');
+    h+=line('    UPDATE EMP SET SALARY = SALARY * 1.1 WHERE DEPT = \'D02\'','blue');
+    h+=line('    CREATE TABLE T1 (COL1 INTEGER, COL2 CHAR(10))','blue');
+    h+=line('','');
+    h+=line('  M = main menu','dim');
+  }
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='SQL ===>';
+}
+function formatSqlResult(res){
+  let lines=[];
+  lines.push({text:'SQLCODE = ' + res.sqlcode + '   ' + res.message, cls: res.sqlcode<0?'red':(res.sqlcode>0?'amber':'green')});
+  if(res.rows && res.rows.length){
+    lines.push({text:''});
+    const widths = res.columns.map(c=>Math.max(c.length, ...res.rows.map(r=>String(r[c]).length)));
+    lines.push({text: res.columns.map((c,i)=>c.padEnd(widths[i])).join('  '), cls:'white'});
+    lines.push({text: widths.map(w=>'-'.repeat(w)).join('  '), cls:'dim'});
+    res.rows.forEach(r=> lines.push({text: res.columns.map((c,i)=>String(r[c]).padEnd(widths[i])).join('  ')}));
+  }
+  return lines;
+}
+
+function showCommandScreen(){
+  STATE.screen='command';
+  let h='';
+  h+=line('TSO COMMAND LINE','white');
+  h+=line('','');
+  h+=line('  EX name [args]     - run a REXX exec','green');
+  h+=line('  SUBMIT name        - submit a JCL member (also: SUB)','green');
+  h+=line('  LIST / LIBRARY     - list exec-library members','green');
+  h+=line('  EDIT name          - edit/create a member','green');
+  h+=line('  DEL name           - delete a member','green');
+  h+=line('  NEW name TYPE      - create empty member (TYPE=REXX/JCL/TEXT)','green');
+  h+=line('  SDSF               - view job queue','green');
+  h+=line('  DATASETS / LISTCAT - view dataset catalog','green');
+  h+=line('  ALLOC dsn          - allocate a new empty dataset','green');
+  h+=line('  BROWSE dsn         - view dataset contents','green');
+  h+=line('  DELDS dsn          - delete a dataset','green');
+  h+=line('  DB2 / SPUFI        - ad-hoc SQL against DB2 tables','green');
+  h+=line('  SQL <statement>    - run one SQL statement right here','green');
+  h+=line('  EXPORT             - download your whole session as a .json file','green');
+  h+=line('  IMPORT             - load a session .json file (use on any laptop)','green');
+  h+=line('  CONNECT            - pick a real folder on disk to save to (Chrome/Edge)','green');
+  h+=line('  DISCONNECT         - stop saving to the connected folder','green');
+  h+=line('  RECONNECT          - restore access to a previously connected folder','green');
+  h+=line('  HELP               - this help','green');
+  h+=line('  M                  - main menu','green');
+  h+=line('  LOGOFF             - end session','green');
+  h+=line('','');
+  h+=line('  Type a command below and press Enter.','blue');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='Command ===>';
+}
+
+function appendResultScreen(title, bodyLines){
+  let h='';
+  h+=line(title,'white');
+  h+=line('','');
+  bodyLines.forEach(l=>h+=line(l.text!==undefined? l.text : l, l.cls||'green'));
+  h+=line('','');
+  h+=line('  Press Enter or type M for the main menu.','dim');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='Command ===>';
+  STATE.screen='result';
+}
+
+// =====================================================================
+// --------------------------- DATASET / TSO HOST -------------------------
+// =====================================================================
+function tsoHostCommandHandler(cmd, address, rexx){
+  const trimmed = cmd.trim();
+  const upper = trimmed.toUpperCase();
+  if(upper.startsWith('ALLOC')){
+    const dd = (trimmed.match(/DD\(([^)]+)\)/i)||[])[1];
+    const dsn = (trimmed.match(/DSN\('?([^'()]+)'?\)/i)||[])[1];
+    if(!dd || !dsn) return {rc:12, output:['IKJ56224I MISSING DD OR DSN ON ALLOC']};
+    const isNew = /\bNEW\b/i.test(trimmed);
+    if(isNew && !DATASETS[dsn]){ DATASETS[dsn] = {records:[]}; saveDatasets(); }
+    if(!DATASETS[dsn] && !isNew) return {rc:8, output:['IKJ56231I DATA SET ' + dsn + ' NOT FOUND']};
+    rexx.allocs[dd.toUpperCase()] = dsn;
+    return {rc:0, output:[]};
+  }
+  if(upper.startsWith('FREE')){
+    const dd = (trimmed.match(/DD\(([^)]+)\)/i)||[])[1];
+    if(dd) delete rexx.allocs[dd.toUpperCase()];
+    return {rc:0, output:[]};
+  }
+  if(upper.startsWith('EXECIO')){
+    const m = trimmed.match(/^EXECIO\s+(\S+)\s+(DISKR|DISKW)\s+(\S+)\s*\(\s*(.*)$/i);
+    if(!m) return {rc:20, output:['IKJ56228I INVALID EXECIO SYNTAX']};
+    const countTok=m[1], mode=m[2].toUpperCase(), dd=m[3].toUpperCase(), optsPart=m[4];
+    const stemMatch = optsPart.match(/STEM\s+(\S+)/i);
+    const dsn = rexx.allocs[dd];
+    if(!dsn || !DATASETS[dsn]) return {rc:16, output:['IKJ56231I DD ' + dd + ' NOT ALLOCATED']};
+    const ds = DATASETS[dsn];
+    const stem = (stemMatch? stemMatch[1]:'LINE').replace(/\.$/,'');
+    if(mode==='DISKR'){
+      const count = countTok==='*'? ds.records.length : parseInt(countTok,10);
+      const n = Math.min(count, ds.records.length);
+      for(let i=0;i<n;i++) rexx.vars[(stem+'.'+(i+1)).toUpperCase()] = ds.records[i];
+      rexx.vars[(stem+'.0').toUpperCase()] = n;
+    } else {
+      const total = parseInt(rexx.vars[(stem+'.0').toUpperCase()]||'0',10);
+      for(let i=1;i<=total;i++) ds.records.push(String(rexx.vars[(stem+'.'+i).toUpperCase()]||''));
+      saveDatasets();
+    }
+    return {rc:0, output:[]};
+  }
+  if(upper.startsWith('DELETE')){
+    const dsn = trimmed.split(/\s+/)[1];
+    if(dsn && DATASETS[dsn]){ delete DATASETS[dsn]; saveDatasets(); return {rc:0, output:['ENTRY ' + dsn + ' DELETED']}; }
+    return {rc:8, output:['ENTRY NOT FOUND: ' + dsn]};
+  }
+  if(upper.startsWith('LISTDS') || upper.startsWith('LISTCAT')){
+    return {rc:0, output: Object.keys(DATASETS)};
+  }
+  return {rc:12, output:['IKJ56225I UNKNOWN COMMAND: ' + cmd]};
+}
+
+function getDatasetLines(ddInfo, log){
+  if(!ddInfo) return [];
+  if(ddInfo.inline) return ddInfo.inline.map(l=>l.trim());
+  if(ddInfo.dummy) return [];
+  if(ddInfo.dsn){
+    if(DATASETS[ddInfo.dsn]) return DATASETS[ddInfo.dsn].records.slice();
+    if(log) log.push({text:'IEC141I ' + ddInfo.dsn + ' NOT FOUND IN CATALOG', cls:'amber'});
+  }
+  return [];
+}
+function ensureDataset(ddInfo){
+  if(!ddInfo || !ddInfo.dsn) return null;
+  if(!DATASETS[ddInfo.dsn]) DATASETS[ddInfo.dsn] = {records:[]};
+  return DATASETS[ddInfo.dsn];
+}
+
+// =====================================================================
+// --------------------------- JCL PARSER ---------------------------------
+// =====================================================================
+function parseJCL(text){
+  const lines = text.split(/\r?\n/);
+  let job = {name:null, steps:[]};
+  let curStep = null;
+  let i=0;
+  while(i<lines.length){
+    let l = lines[i];
+    if(!l.startsWith('//')){ i++; continue; }
+    if(l.startsWith('//*')){ i++; continue; }
+    if(l.trim()==='//'){ i++; continue; }
+    const m = l.match(/^\/\/(\S*)\s+(.*)$/);
+    if(!m){ i++; continue; }
+    const label = m[1];
+    let rest = m[2];
+    while(rest.trim().endsWith(',') && i+1<lines.length && lines[i+1].startsWith('//')){
+      i++;
+      const contRest = lines[i].replace(/^\/\/\s*/,'');
+      rest = rest.trim().slice(0,-1) + ' ' + contRest;
+    }
+    if(/\bJOB\b/.test(rest) && !job.name){ job.name = label; i++; continue; }
+    if(/\bEXEC\b/.test(rest)){
+      const pgmMatch = rest.match(/PGM=([A-Za-z0-9$#@]+)/);
+      const procMatch = rest.match(/EXEC\s+([A-Za-z0-9$#@]+)\b/);
+      const parmMatch = rest.match(/PARM=(?:'([^']*)'|([^,\s]+))/);
+      const condMatches = [...rest.matchAll(/COND=\(([^)]+)\)/g)];
+      const conds = condMatches.map(cm=>{ const p=cm[1].split(',').map(s=>s.trim()); return {code:parseInt(p[0],10), op:(p[1]||'EQ').toUpperCase()}; });
+      curStep = {
+        name: label,
+        pgm: pgmMatch? pgmMatch[1] : (procMatch && !/^PGM/.test(procMatch[1])? procMatch[1] : null),
+        parm: parmMatch? (parmMatch[1]!==undefined? parmMatch[1]:parmMatch[2]) : null,
+        cond: conds,
+        dd: {}
+      };
+      job.steps.push(curStep);
+      i++; continue;
+    }
+    if(curStep && label){
+      const isInline = /^\s*DD\s+\*\s*$/i.test(rest) || /^\s*DD\s+DATA\b/i.test(rest);
+      const dsnMatch = rest.match(/DSN=([A-Za-z0-9$#@.]+)/i);
+      const dispMatch = rest.match(/DISP=\(?([A-Za-z,]+)\)?/i);
+      const isDummy = /\bDUMMY\b/i.test(rest);
+      const ddInfo = {raw:rest, dsn: dsnMatch? dsnMatch[1].toUpperCase():null, disp: dispMatch? dispMatch[1].toUpperCase():null, dummy:isDummy, inline:null};
+      curStep.dd[label] = ddInfo;
+      if(isInline){
+        let inlineLines=[];
+        i++;
+        while(i<lines.length && !lines[i].startsWith('//') && lines[i].trim()!=='/*'){ inlineLines.push(lines[i]); i++; }
+        if(i<lines.length && lines[i].trim()==='/*') i++;
+        ddInfo.inline = inlineLines;
+        continue;
+      }
+      i++; continue;
+    }
+    i++;
+  }
+  return job;
+}
+
+// =====================================================================
+// --------------------------- JCL / STEP EXECUTION -----------------------
+// =====================================================================
+function condSaysSkip(condList, prevRC){
+  for(const c of condList){
+    const op=c.op, code=c.code;
+    let hit=false;
+    if(op==='EQ') hit = prevRC===code;
+    else if(op==='NE') hit = prevRC!==code;
+    else if(op==='GT') hit = prevRC>code;
+    else if(op==='GE') hit = prevRC>=code;
+    else if(op==='LT') hit = prevRC<code;
+    else if(op==='LE') hit = prevRC<=code;
+    if(hit) return true;
+  }
+  return false;
+}
+
+function runStep(step, jobIdStr, log){
+  const pgm = step.pgm;
+  if(!pgm){ log.push({text:'IEF212I ' + step.name + ' STEP HAS NO PGM= - SKIPPED', cls:'amber'}); return 0; }
+  log.push({text: jobIdStr + ' IEF236I ALLOC FOR ' + step.name});
+
+  if(pgm==='IEFBR14'){
+    Object.values(step.dd).forEach(dd=>{
+      if(dd.dsn && dd.disp && dd.disp.startsWith('NEW')){
+        DATASETS[dd.dsn] = DATASETS[dd.dsn] || {records:[]};
+        log.push({text: jobIdStr + ' IEF285I ' + dd.dsn + ' CATALOGED'});
+      }
+    });
+    saveDatasets();
+    log.push({text: jobIdStr + ' ' + step.name + ' EXEC PGM=IEFBR14 -- DATASET ALLOCATION ONLY'});
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0000', cls:'green'});
+    return 0;
+  }
+  if(pgm==='IEBGENER'){
+    const inLines = getDatasetLines(step.dd.SYSUT1, log);
+    const outDs = ensureDataset(step.dd.SYSUT2);
+    if(!outDs){ log.push({text: jobIdStr + ' IEF212I MISSING/INVALID SYSUT2 DD', cls:'red'}); return 12; }
+    outDs.records = outDs.records.concat(inLines);
+    saveDatasets();
+    log.push({text: jobIdStr + ' ' + step.name + ' EXEC PGM=IEBGENER -- COPIED ' + inLines.length + ' RECORDS TO ' + (step.dd.SYSUT2.dsn||'(SYSUT2)')});
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0000', cls:'green'});
+    return 0;
+  }
+  if(pgm==='SORT'){
+    const inLines = getDatasetLines(step.dd.SORTIN, log);
+    const outDs = ensureDataset(step.dd.SORTOUT);
+    const sysin = getDatasetLines(step.dd.SYSIN, log).join(' ');
+    const desc = /,\s*D\s*\)/i.test(sysin);
+    let sorted = inLines.slice().sort();
+    if(desc) sorted.reverse();
+    if(outDs) outDs.records = sorted;
+    saveDatasets();
+    log.push({text: jobIdStr + ' ' + step.name + ' EXEC PGM=SORT -- SORTED ' + inLines.length + ' RECORDS (' + (desc?'DESCENDING':'ASCENDING') + ')'});
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0000', cls:'green'});
+    return 0;
+  }
+  if(pgm==='IDCAMS'){
+    const cards = getDatasetLines(step.dd.SYSIN, log);
+    let rc=0;
+    cards.forEach(card=>{
+      const c=card.trim().toUpperCase();
+      if(!c) return;
+      if(c.startsWith('DEFINE')){
+        const nm=(c.match(/NAME\(([^)]+)\)/)||[])[1];
+        if(nm){ DATASETS[nm]={records:[]}; log.push({text: jobIdStr + ' IDC0001I FUNCTION COMPLETED, DEFINE ' + nm}); }
+        else { log.push({text: jobIdStr + ' IDC3009I MISSING NAME ON DEFINE', cls:'amber'}); rc=8; }
+      } else if(c.startsWith('DELETE')){
+        const nm=c.split(/\s+/)[1];
+        if(nm && DATASETS[nm]){ delete DATASETS[nm]; log.push({text: jobIdStr + ' IDC0001I FUNCTION COMPLETED, DELETE ' + nm}); }
+        else { log.push({text: jobIdStr + ' IDC3012I ENTRY ' + nm + ' NOT FOUND', cls:'amber'}); rc=8; }
+      } else if(c.startsWith('REPRO')){
+        const inNm=(c.match(/INFILE\(([^)]+)\)/)||[])[1] || (c.match(/INDATASET\(([^)]+)\)/)||[])[1];
+        const outNm=(c.match(/OUTFILE\(([^)]+)\)/)||[])[1] || (c.match(/OUTDATASET\(([^)]+)\)/)||[])[1];
+        if(inNm && outNm && DATASETS[inNm]){
+          DATASETS[outNm] = DATASETS[outNm] || {records:[]};
+          DATASETS[outNm].records = DATASETS[outNm].records.concat(DATASETS[inNm].records);
+          log.push({text: jobIdStr + ' IDC0001I FUNCTION COMPLETED, REPRO ' + inNm + ' -> ' + outNm});
+        } else {
+          log.push({text: jobIdStr + ' IDC0001I FUNCTION COMPLETED, REPRO (SIMULATED)'});
+        }
+      } else {
+        log.push({text: jobIdStr + ' IDC0002I UNRECOGNIZED IDCAMS COMMAND: ' + card, cls:'amber'});
+      }
+    });
+    saveDatasets();
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE ' + String(rc).padStart(4,'0'), cls: rc>0?'amber':'green'});
+    return rc;
+  }
+  if(pgm==='DSNTEP2' || pgm==='DSNTIAD'){
+    // Classic IBM sample batch dynamic-SQL program: reads semicolon-terminated
+    // SQL statements from SYSIN, prints a report + SQLCODE per statement.
+    const cards = getDatasetLines(step.dd.SYSIN, log);
+    const text = cards.join('\n');
+    const stmts = text.split(';').map(s=>s.trim()).filter(s=>s.length);
+    let maxAbsSqlcode = 0;
+    stmts.forEach(stmt=>{
+      log.push({text: jobIdStr + ' ---------------------------------------------------------------'});
+      log.push({text: jobIdStr + ' SQL STATEMENT:  ' + stmt.replace(/\s+/g,' ')});
+      const res = db2.execute(stmt);
+      if(res.sqlcode<0) maxAbsSqlcode = Math.max(maxAbsSqlcode, Math.abs(res.sqlcode));
+      log.push({text: jobIdStr + ' SQLCODE = ' + res.sqlcode + '  ' + res.message, cls: res.sqlcode<0?'red':(res.sqlcode>0?'amber':undefined)});
+      if(res.rows && res.rows.length){
+        log.push({text: jobIdStr + ' ' + res.columns.join('  ')});
+        res.rows.forEach(r=> log.push({text: jobIdStr + ' ' + res.columns.map(c=>String(r[c])).join('  ')}));
+      }
+    });
+    saveState();
+    const rc = maxAbsSqlcode===0? 0 : (maxAbsSqlcode>=200? 8:4);
+    log.push({text: jobIdStr + ' ' + step.name + ' EXEC PGM=' + pgm + ' -- RAN ' + stmts.length + ' SQL STATEMENT(S)'});
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE ' + String(rc).padStart(4,'0'), cls: rc>0?'amber':'green'});
+    return rc;
+  }
+  if(pgm==='IKJEFT01' || pgm==='IRXJCL'){
+    let execName=null, execArgs='';
+    if(step.parm){ const pm=step.parm.trim().match(/^%?(\S+)\s*(.*)$/); if(pm){ execName=pm[1]; execArgs=pm[2]||''; } }
+    if(!execName){ log.push({text: jobIdStr + ' ' + step.name + ' - NO REXX EXEC NAME RESOLVED FROM PARM=', cls:'amber'}); log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0012', cls:'amber'}); return 12; }
+    const target = MEMBERS[execName.toUpperCase()];
+    if(!target || target.type!=='REXX'){ log.push({text: jobIdStr + ' IKJ56228I ' + execName + ' NOT FOUND OR NOT A REXX EXEC', cls:'red'}); log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0012', cls:'red'}); return 12; }
+    const initialAllocs = {};
+    Object.keys(step.dd).forEach(dd=>{
+      if(!['SYSTSIN','SYSTSPRT','SYSEXEC','SYSPRINT'].includes(dd) && step.dd[dd].dsn) initialAllocs[dd]=step.dd[dd].dsn;
+    });
+    log.push({text: jobIdStr + ' ' + step.name + " EXEC PGM=" + pgm + " RUNNING REXX '" + execName + "'"});
+    const r = new Rexx(target.content, {argString: execArgs, hostCommandHandler, initialAllocs});
+    const res = r.run();
+    res.output.forEach(o=> log.push({text: jobIdStr + ' STDOUT  ' + o}));
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE ' + String(res.rc).padStart(4,'0'), cls: res.rc>0? 'amber':'green'});
+    return res.rc;
+  }
+  log.push({text: jobIdStr + ' ' + step.name + ' EXEC PGM=' + pgm + ' -- (SIMULATED - NO OUTPUT MODEL FOR THIS PGM)'});
+  log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0000', cls:'green'});
+  return 0;
+}
+
+function runJCL(memberName){
+  const mem = MEMBERS[memberName];
+  const jobNum = ++STATE.jobCounter;
+  const jobIdStr = 'JOB' + jobNum;
+  let log = [];
+  log.push({text:'------------------------ JES2 JOB LOG ------------------------', cls:'dim'});
+  if(!mem || mem.type!=='JCL'){
+    log.push({text:'IEF212I ' + memberName + ' JCL ERROR - MEMBER NOT FOUND OR NOT JCL', cls:'red'});
+    const jobRec = {name:memberName, jobid:jobIdStr, rc:'JCLERR', log};
+    STATE.jobs.push(jobRec);
+    return jobRec;
+  }
+  const job = parseJCL(mem.content);
+  const jobName = job.name || memberName;
+  log.push({text: jobIdStr + ' ' + jobName + ' - STARTED - INIT 1 - CLASS A'});
+  log.push({text: jobIdStr + ' IEF403I ' + jobName + ' - STARTED'});
+  log.push({text: ''});
+
+  if(job.steps.length===0){
+    log.push({text:'IEF212I ' + jobName + ' JCL ERROR - NO EXEC STATEMENTS FOUND', cls:'red'});
+    log.push({text: jobIdStr + ' IEF404I ' + jobName + ' - ENDED - RC=JCL ERROR', cls:'red'});
+    const jobRec = {name:jobName, jobid:jobIdStr, rc:'JCLERR', log};
+    STATE.jobs.push(jobRec);
+    return jobRec;
+  }
+
+  let prevRC=0, maxRC=0;
+  job.steps.forEach(step=>{
+    if(step.cond && step.cond.length && condSaysSkip(step.cond, prevRC)){
+      log.push({text: jobIdStr + ' ' + step.name + ' - STEP BYPASSED - COND=' + JSON.stringify(step.cond) + ' SATISFIED BY PRIOR RC=' + prevRC, cls:'amber'});
+      return;
+    }
+    const rc = runStep(step, jobIdStr, log);
+    prevRC = rc; maxRC = Math.max(maxRC, rc);
+  });
+
+  log.push({text:''});
+  log.push({text: jobIdStr + ' IEF404I ' + jobName + ' - ENDED', cls: maxRC>0?'amber':'green'});
+  log.push({text: jobIdStr + ' ' + jobName + ' MAXIMUM CONDITION CODE = ' + String(maxRC).padStart(4,'0'), cls: maxRC>0?'amber':'green'});
+  log.push({text:'---------------------------------------------------------------', cls:'dim'});
+  const jobRec = {name:jobName, jobid:jobIdStr, rc:maxRC, log};
+  STATE.jobs.push(jobRec);
+  saveState();
+  return jobRec;
+}
+
+// =====================================================================
+// --------------------------- COMMAND ROUTER -----------------------------
+// =====================================================================
+function handleCommand(raw){
+  const cmdRaw = (raw!==undefined? raw : cmdInput.value).trim();
+  cmdInput.value='';
+
+  if(STATE.screen==='edit'){ handleEditCommand(cmdRaw); return; }
+
+  const cmd = cmdRaw;
+  const upper = cmd.toUpperCase();
+  const parts = cmd.split(/\s+/).filter(Boolean);
+  const verb = (parts[0]||'').toUpperCase();
+
+  if(STATE.screen==='logon'){
+    if(upper==='LOGON' || upper===''){ showPrimaryMenu(); return; }
+    if(upper==='CONNECT'){ connectFolder(); return; }
+    if(upper==='DISCONNECT'){ disconnectFolder(); return; }
+    if(upper==='RECONNECT'){ reconnectPending(); return; }
+    if(upper==='HELP'){ appendResultScreen('HELP', [
+      {text:'This is a simulated 3270 / TSO / ISPF environment.'},
+      {text:'Type LOGON to sign on, then use the ISPF menu or type'},
+      {text:'commands like EX, SUBMIT, EDIT, LIST, ALLOC directly.'},
+    ]); return; }
+    showLogon(); return;
+  }
+
+  if(upper==='M' || upper==='MENU' || upper==='=M'){ showPrimaryMenu(); return; }
+  if(upper==='X' || upper==='LOGOFF' || upper==='LOGOUT'){ showLogon(); return; }
+  if(upper==='HELP'){ showCommandScreen(); return; }
+  if(upper==='EXPORT'){ exportSession(); appendResultScreen('EXPORT', [{text:'Session downloaded as a .json file.'}, {text:'Copy it to another laptop and use IMPORT there to restore everything.'}]); return; }
+  if(upper==='IMPORT'){ document.getElementById('importFileInput').click(); return; }
+  if(upper==='CONNECT'){ connectFolder(); return; }
+  if(upper==='DISCONNECT'){ disconnectFolder(); return; }
+  if(upper==='RECONNECT'){ reconnectPending(); return; }
+  if(verb==='SQL'){ const sqlText = cmd.slice(3).trim(); if(!sqlText){ appendResultScreen('SQL', [{text:'Usage: SQL <statement>'}]); return; } const res = db2.execute(sqlText); saveState(); appendResultScreen('SQL RESULT', formatSqlResult(res)); return; }
+
+  if(STATE.screen==='result'){ showPrimaryMenu(); return; }
+
+  if(STATE.screen==='spufi'){
+    if(upper===''){ showSPUFI(); return; }
+    const res = db2.execute(cmd);
+    saveState();
+    showSPUFI(formatSqlResult(res));
+    return;
+  }
+
+  if(STATE.screen==='menu'){
+    if(verb==='0'){
+      const storageLines = [];
+      if(DIR_HANDLE){
+        storageLines.push({text:'STORAGE: connected to a real folder: "' + DIR_HANDLE.name + '"', cls:'green'});
+        storageLines.push({text:'Every action writes ' + SESSION_FILENAME + ' into that folder. Type'});
+        storageLines.push({text:'DISCONNECT to go back to browser-only storage.'});
+      } else if(PENDING_RECONNECT_HANDLE){
+        storageLines.push({text:'STORAGE: browser storage only right now.', cls:'amber'});
+        storageLines.push({text:'This browser was connected to folder "' + PENDING_RECONNECT_NAME + '" before -'});
+        storageLines.push({text:'type RECONNECT to restore access to it (needs one click).'});
+      } else if(FSA_SUPPORTED){
+        storageLines.push({text:'STORAGE: browser local storage only (no folder connected).'});
+        storageLines.push({text:'Type CONNECT to pick a real folder on disk instead - everything then'});
+        storageLines.push({text:'saves there as a plain ' + SESSION_FILENAME + ' file you can inspect, back up,'});
+        storageLines.push({text:'or share by pointing another Chrome/Edge browser at the same folder.'});
+      } else {
+        storageLines.push({text:'STORAGE: browser local storage only.'});
+        storageLines.push({text:'(Folder connection needs Chrome, Edge, or another Chromium browser.)'});
+      }
+      appendResultScreen('SETTINGS', [
+        {text:'USERID: ' + STATE.userid},
+        {text:'TERMINAL: 3270 (simulated), 80x24 model 2 equivalent'},
+        {text:''},
+        {text:'PERSISTENCE:', cls:'white'},
+        ...storageLines,
+        {text:''},
+        {text:'Everything (members, datasets, DB2 tables) auto-saves after every'},
+        {text:'action, regardless of which storage tier is active.'},
+        {text:''},
+        {text:'To move a session between machines without a connected folder:'},
+        {text:'EXPORT downloads a .json snapshot; IMPORT loads one back in.'},
+      ]);
+      return;
+    }
+    if(verb==='1' || verb==='LIBRARY' || verb==='LIST'){ showLibrary(); return; }
+    if(verb==='2' || verb==='EDIT'){
+      const name=(parts[1]||'').toUpperCase();
+      if(name) showEditor(name, !MEMBERS[name], 'members');
+      else appendResultScreen('EDIT', [{text:'Usage: EDIT <member-name>  (or use option 2 then type EDIT name)'}]);
+      return;
+    }
+    if(verb==='3'){ showRunRexxPrompt(); return; }
+    if(verb==='4'){ showSubmitPrompt(); return; }
+    if(verb==='5' || verb==='SDSF'){ showSDSF(); return; }
+    if(verb==='6' || verb==='DATASETS' || verb==='LISTCAT'){ showDatasets(); return; }
+    if(verb==='7' || verb==='DB2' || verb==='SPUFI'){ showSPUFI(); return; }
+    if(verb==='8' || verb==='COMMAND'){ showCommandScreen(); return; }
+    if(verb==='EX'){ doRunRexx(parts.slice(1)); return; }
+    if(verb==='SUB' || verb==='SUBMIT'){ doSubmit(parts[1]); return; }
+    if(verb==='DEL'){ doDelete(parts[1]); return; }
+    if(verb==='NEW'){ doNew(parts[1], parts[2]); return; }
+    if(verb==='ALLOC'){ doAllocDataset(parts[1]); return; }
+    if(verb==='BROWSE'){ showBrowseDataset((parts[1]||'').toUpperCase()); return; }
+    if(verb==='DELDS'){ doDeleteDataset(parts[1]); return; }
+    appendResultScreen('UNKNOWN OPTION', [{text:'"' + cmd + '" is not a valid option. Choose 0-8 or X.'}]);
+    return;
+  }
+
+  if(STATE.screen==='library'){
+    if(verb==='E' || verb==='EDIT'){ const name=(parts[1]||'').toUpperCase(); if(name) showEditor(name,!MEMBERS[name],'members'); else appendResultScreen('EDIT',[{text:'Usage: E <member-name>'}]); return; }
+    if(verb==='EX'){ doRunRexx(parts.slice(1)); return; }
+    if(verb==='SUB'){ doSubmit(parts[1]); return; }
+    if(verb==='DEL'){ doDelete(parts[1]); return; }
+    if(verb==='NEW'){ doNew(parts[1], parts[2]); return; }
+    showLibrary(); return;
+  }
+
+  if(STATE.screen==='runrexx'){
+    if(verb==='EX'){ doRunRexx(parts.slice(1)); return; }
+    if(MEMBERS[verb] && MEMBERS[verb].type==='REXX'){ doRunRexx(parts); return; }
+    showRunRexxPrompt(); return;
+  }
+
+  if(STATE.screen==='submit'){
+    if(verb==='SUB' || verb==='SUBMIT'){ doSubmit(parts[1]); return; }
+    if(MEMBERS[verb] && MEMBERS[verb].type==='JCL'){ doSubmit(verb); return; }
+    showSubmitPrompt(); return;
+  }
+
+  if(STATE.screen==='sdsf'){
+    if(verb==='S' && parts[1]){ const idx=parseInt(parts[1],10)-1; showSDSFDetail(idx); return; }
+    if(verb==='Q'){ showSDSF(); return; }
+    showSDSF(); return;
+  }
+
+  if(STATE.screen==='datasets'){
+    if(verb==='ALLOC'){ doAllocDataset(parts[1]); return; }
+    if(verb==='BROWSE'){ showBrowseDataset((parts[1]||'').toUpperCase()); return; }
+    if(verb==='EDIT'){ const name=(parts[1]||'').toUpperCase(); if(name) showEditor(name,!DATASETS[name],'datasets'); else appendResultScreen('EDIT',[{text:'Usage: EDIT <dsname>'}]); return; }
+    if(verb==='DEL' || verb==='DELDS'){ doDeleteDataset(parts[1]); return; }
+    showDatasets(); return;
+  }
+
+  if(STATE.screen==='command'){
+    if(verb==='EX'){ doRunRexx(parts.slice(1)); return; }
+    if(verb==='SUB' || verb==='SUBMIT'){ doSubmit(parts[1]); return; }
+    if(verb==='LIST' || verb==='LIBRARY'){ showLibrary(); return; }
+    if(verb==='EDIT'){ const name=(parts[1]||'').toUpperCase(); if(name) showEditor(name,!MEMBERS[name],'members'); else appendResultScreen('EDIT',[{text:'Usage: EDIT <member-name>'}]); return; }
+    if(verb==='DEL'){ doDelete(parts[1]); return; }
+    if(verb==='NEW'){ doNew(parts[1], parts[2]); return; }
+    if(verb==='SDSF'){ showSDSF(); return; }
+    if(verb==='DATASETS' || verb==='LISTCAT'){ showDatasets(); return; }
+    if(verb==='ALLOC'){ doAllocDataset(parts[1]); return; }
+    if(verb==='BROWSE'){ showBrowseDataset((parts[1]||'').toUpperCase()); return; }
+    if(verb==='DELDS'){ doDeleteDataset(parts[1]); return; }
+    if(verb==='DB2' || verb==='SPUFI'){ showSPUFI(); return; }
+    appendResultScreen('UNKNOWN COMMAND', [{text:'"' + cmd + '" not recognized. Type HELP for a list.'}]);
+    return;
+  }
+
+  showPrimaryMenu();
+}
+
+function doRunRexx(argParts){
+  const name = (argParts[0]||'').toUpperCase();
+  const args = argParts.slice(1).join(' ');
+  if(!name){ appendResultScreen('RUN REXX', [{text:'Usage: EX <member> [args]'}]); return; }
+  const mem = MEMBERS[name];
+  if(!mem || mem.type!=='REXX'){ appendResultScreen('RUN REXX', [{text:name + ' is not a REXX member.'}]); return; }
+  const r = new Rexx(mem.content, {argString: args, hostCommandHandler});
+  const res = r.run();
+  saveState();
+  let body = [];
+  body.push({text:'READY  EX ' + name + (args? ' '+args:''), cls:'amber'});
+  body.push({text:''});
+  if(res.output.length===0) body.push({text:'(no SAY output produced)', cls:'dim'});
+  res.output.forEach(o=>body.push({text: o}));
+  body.push({text:''});
+  body.push({text:'*** ' + name + ' ENDED, RC=' + res.rc + ' ***', cls: res.rc>0?'amber':'green'});
+  appendResultScreen('REXX EXECUTION: ' + name, body);
+}
+
+function doSubmit(name){
+  const nm = (name||'').toUpperCase();
+  if(!nm){ appendResultScreen('SUBMIT', [{text:'Usage: SUB <member>'}]); return; }
+  const jobRec = runJCL(nm);
+  appendResultScreen('JOB SUBMITTED: ' + nm + ' (' + jobRec.jobid + ')', [
+    {text:'Job routed to JES2 internal reader...', cls:'dim'},
+    {text:''},
+    ...jobRec.log,
+    {text:''},
+    {text:'View full log any time with option 5 (SDSF).', cls:'blue'}
+  ]);
+}
+
+function doDelete(name){
+  const nm=(name||'').toUpperCase();
+  if(!nm || !MEMBERS[nm]){ appendResultScreen('DELETE', [{text:'Member not found: ' + nm}]); return; }
+  delete MEMBERS[nm];
+  saveMembers();
+  appendResultScreen('DELETE', [{text:'Member ' + nm + ' deleted.'}]);
+}
+
+function doNew(name, type){
+  const nm=(name||'').toUpperCase();
+  const ty=(type||'REXX').toUpperCase();
+  if(!nm){ appendResultScreen('NEW MEMBER', [{text:'Usage: NEW <name> [REXX|JCL|TEXT]'}]); return; }
+  if(!['REXX','JCL','TEXT'].includes(ty)){ appendResultScreen('NEW MEMBER', [{text:'TYPE must be REXX, JCL, or TEXT'}]); return; }
+  showEditor(nm, true, 'members', ty);
+}
+
+function doAllocDataset(name){
+  const nm=(name||'').toUpperCase();
+  if(!nm){ appendResultScreen('ALLOC', [{text:'Usage: ALLOC <dsname>'}]); return; }
+  if(DATASETS[nm]){ appendResultScreen('ALLOC', [{text:'Dataset already exists: ' + nm}]); return; }
+  DATASETS[nm] = {records:[]};
+  saveDatasets();
+  appendResultScreen('ALLOC', [{text:'IEF285I ' + nm + ' CATALOGED'}, {text:'Use EDIT ' + nm + ' to add records.'}]);
+}
+function doDeleteDataset(name){
+  const nm=(name||'').toUpperCase();
+  if(!nm || !DATASETS[nm]){ appendResultScreen('DELETE DATASET', [{text:'Dataset not found: ' + nm}]); return; }
+  delete DATASETS[nm];
+  saveDatasets();
+  appendResultScreen('DELETE DATASET', [{text:'IDC0001I FUNCTION COMPLETED, DELETE ' + nm}]);
+}
+
+function handleEditCommand(cmdRaw){
+  const upper = cmdRaw.toUpperCase();
+  if(upper===''){ return; }
+  if(upper==='SAVE' || upper==='PF3' || upper==='__SAVE_EXIT__'){
+    saveCurrentEdit();
+    hideEditorUI();
+    appendResultScreen('SAVED', [{text: (STATE.editStore==='members'?'Member ':'Dataset ') + STATE.currentMember + ' saved.'}]);
+    return;
+  }
+  if(upper==='__SAVE_RUN__' || upper==='PF5'){
+    saveCurrentEdit();
+    hideEditorUI();
+    if(STATE.editStore==='members'){
+      const mem = MEMBERS[STATE.currentMember];
+      if(mem.type==='REXX') doRunRexx([STATE.currentMember]);
+      else if(mem.type==='JCL') doSubmit(STATE.currentMember);
+      else appendResultScreen('SAVED', [{text:'Member ' + STATE.currentMember + ' saved (TEXT members are not executable).'}]);
+    } else {
+      appendResultScreen('SAVED', [{text:'Dataset ' + STATE.currentMember + ' saved.'}]);
+    }
+    return;
+  }
+  if(upper==='__CANCEL__' || upper==='CANCEL' || upper==='PF12'){
+    hideEditorUI();
+    if(STATE.editStore==='members') showLibrary(); else showDatasets();
+    return;
+  }
+  if(upper==='M'){ hideEditorUI(); showPrimaryMenu(); return; }
+}
+function saveCurrentEdit(){
+  if(STATE.editStore==='members'){ MEMBERS[STATE.currentMember].content = editArea.value; saveMembers(); }
+  else { DATASETS[STATE.currentMember].records = editArea.value.split('\n'); saveDatasets(); }
+}
+
+// =====================================================================
+// ------------------------------ EVENTS ---------------------------------
+// =====================================================================
+cmdInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); handleCommand(); } });
+document.addEventListener('keydown', (e)=>{
+  if(STATE.screen==='edit'){
+    if(e.key==='F3'){ e.preventDefault(); handleEditCommand('PF3'); }
+    if(e.key==='F5'){ e.preventDefault(); handleEditCommand('PF5'); }
+    if(e.key==='F12'){ e.preventDefault(); handleEditCommand('PF12'); }
+    return;
+  }
+});
+screenEl.addEventListener('click', ()=>{ cmdInput.focus(); });
+document.getElementById('importFileInput').addEventListener('change', (e)=>{
+  const file = e.target.files && e.target.files[0];
+  if(file) importSessionFromFile(file);
+  e.target.value = ''; // allow re-selecting the same file later
+});
+
+// =====================================================================
+// ------------------------------- INIT -----------------------------------
+// =====================================================================
+loadState().then(()=>{
+  showLogon();
+  cmdInput.focus();
+});
+
+})();
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch((e) => console.error('SW registration failed', e));
+  });
+}
+</script>
+</body>
+</html>
