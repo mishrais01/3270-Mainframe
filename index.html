@@ -198,6 +198,56 @@ Rexx.prototype.splitRespectingQuotes = function(str, sep){
   return out;
 };
 Rexx.prototype.firstWord = function(clause){ const m=clause.match(/^\s*([^\s]+)/); return m? m[1].toUpperCase():''; };
+// PARSE template support (used by PARSE VALUE/ARG/PULL): tokenize a
+// template into {type:'var',name} / {type:'lit',value} tokens, then apply
+// it against a source string per real REXX PARSE semantics -- a var
+// immediately followed by a literal captures up to that literal; a var
+// followed by another var (no literal) does blank-delimited word
+// extraction; the LAST token, if a var, captures the whole remainder.
+Rexx.prototype.tokenizeTemplate = function(str){
+  let tokens=[]; let i=0; const n=str.length;
+  while(i<n){
+    while(i<n && /\s/.test(str[i])) i++;
+    if(i>=n) break;
+    if(str[i]==="'" || str[i]==='"'){
+      const q=str[i]; let j=i+1, val='';
+      while(j<n){ if(str[j]===q){ if(str[j+1]===q){ val+=q; j+=2; continue;} break;} val+=str[j]; j++; }
+      tokens.push({type:'lit', value:val}); i=j+1;
+    } else {
+      let j=i; while(j<n && !/\s/.test(str[j])) j++;
+      tokens.push({type:'var', name:str.slice(i,j)}); i=j;
+    }
+  }
+  return tokens;
+};
+Rexx.prototype.applyTemplate = function(source, template){
+  let cursor=0; const n=source.length;
+  const skipBlanks = () => { while(cursor<n && /\s/.test(source[cursor])) cursor++; };
+  for(let idx=0; idx<template.length; idx++){
+    const tok=template[idx];
+    if(tok.type==='lit'){
+      const foundAt=source.indexOf(tok.value, cursor);
+      cursor = foundAt>=0? foundAt+tok.value.length : n;
+      continue;
+    }
+    const next=template[idx+1];
+    if(next && next.type==='lit'){
+      const foundAt=source.indexOf(next.value, cursor);
+      const stop = foundAt>=0? foundAt : n;
+      this.vars[tok.name.toUpperCase()] = source.substring(cursor, stop);
+      cursor = stop;
+    } else if(idx===template.length-1){
+      skipBlanks();
+      this.vars[tok.name.toUpperCase()] = source.substring(cursor);
+      cursor = n;
+    } else {
+      skipBlanks();
+      const start=cursor;
+      while(cursor<n && !/\s/.test(source[cursor])) cursor++;
+      this.vars[tok.name.toUpperCase()] = source.substring(start, cursor);
+    }
+  }
+};
 Rexx.prototype.parseBlock = function(lines,start,end){
   let stmts=[]; let i=start;
   while(i<end){
@@ -229,13 +279,13 @@ Rexx.prototype.parseOne = function(lines,i,end){
   if(kw==='PULL') return {stmt:{type:'pull',names:rest.split(/\s+/).filter(Boolean)}, next:i+1};
   if(kw==='PARSE'){
     const r2=rest.trim(); const kw2=r2.split(/\s+/)[0].toUpperCase();
-    if(kw2==='ARG') return {stmt:{type:'arg',names:r2.slice(3).trim().split(/\s+/).filter(Boolean)}, next:i+1};
-    if(kw2==='PULL') return {stmt:{type:'pull',names:r2.slice(4).trim().split(/\s+/).filter(Boolean)}, next:i+1};
+    if(kw2==='ARG') return {stmt:{type:'parsearg', template:this.tokenizeTemplate(r2.slice(3).trim())}, next:i+1};
+    if(kw2==='PULL') return {stmt:{type:'parsepull', template:this.tokenizeTemplate(r2.slice(4).trim())}, next:i+1};
     if(kw2==='VALUE'){
       const withIdx=r2.toUpperCase().indexOf(' WITH ');
       const exprPart=r2.slice(6, withIdx>=0?withIdx:undefined).trim();
-      const namesPart= withIdx>=0? r2.slice(withIdx+6).trim():'';
-      return {stmt:{type:'parsevalue',expr:exprPart,names:namesPart.split(/\s+/).filter(Boolean)}, next:i+1};
+      const templatePart= withIdx>=0? r2.slice(withIdx+6).trim():'';
+      return {stmt:{type:'parsevalue', expr:exprPart, template:this.tokenizeTemplate(templatePart)}, next:i+1};
     }
     return {stmt:{type:'nop'}, next:i+1};
   }
@@ -277,6 +327,14 @@ Rexx.prototype.parseInlineOrBlock = function(lines, i, end, remainder){
   if(!remainder) return this.parseOne(lines, i+1, end);
   const kw = remainder.split(/\s+/)[0].toUpperCase();
   if(kw==='DO') return this.parseDo(lines, i, end, remainder.slice(2).trim());
+  if(kw==='IF'){
+    // Recurse with the REAL lines/end context (not a synthetic 1-line
+    // array) so a multi-line "ELSE IF ... THEN ... \n ELSE ..." chain can
+    // still look ahead past this line for a later real ELSE and attach it
+    // to this nested IF, instead of leaving it dangling -- which silently
+    // truncated parsing of everything after it (a real bug, found via testing).
+    return this.parseIf(lines, i, end, remainder.slice(2).trim());
+  }
   const sub = this.parseOne([remainder], 0, 1);
   return {stmt: sub.stmt, next: i+1};
 };
@@ -377,8 +435,18 @@ Rexx.prototype.execOne = function(st){
       return null;
     }
     case 'parsevalue': {
-      const val=String(this.evalExpr(st.expr)); const parts=val.trim().split(/\s+/);
-      st.names.forEach((nm,idx)=>{ this.vars[nm.toUpperCase()] = parts[idx]!==undefined? parts[idx]:''; });
+      const val = this.evalToString(st.expr);
+      this.applyTemplate(val, st.template);
+      return null;
+    }
+    case 'parsearg': {
+      // PARSE ARG preserves case (unlike plain PULL, which uppercases)
+      this.applyTemplate(this.argString, st.template);
+      return null;
+    }
+    case 'parsepull': {
+      const v = this.inputQueue.length? String(this.inputQueue.shift()) : '';
+      this.applyTemplate(v.toUpperCase(), st.template); // PULL-family uppercases input
       return null;
     }
     case 'if': {
@@ -599,7 +667,26 @@ Rexx.prototype.callFunc = function(name,args){
     case 'MIN': return Math.min(...args.map((_,i)=>n(i)));
     case 'TRUNC': { const d= args[1]!==undefined? Math.round(n(1)):0; const f=Math.pow(10,d); return Math.trunc(n(0)*f)/f; }
     case 'RANDOM': { const lo= args[0]!==undefined? Math.round(n(0)):0; const hi= args[1]!==undefined? Math.round(n(1)):999; return lo+Math.floor(Math.random()*(hi-lo+1)); }
-    case 'DATE': return new Date().toISOString().slice(0,10);
+    case 'DATE': {
+      const now = new Date();
+      const yyyy = now.getFullYear(), mm = now.getMonth()+1, dd = now.getDate();
+      if(args.length === 0) return yyyy + '-' + String(mm).padStart(2,'0') + '-' + String(dd).padStart(2,'0');
+      const opt = s(0).toUpperCase().charAt(0);
+      const dayOfYear = Math.floor((Date.UTC(yyyy,mm-1,dd) - Date.UTC(yyyy,0,1))/86400000) + 1;
+      const wdays = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const mons = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      switch(opt){
+        case 'J': return String(yyyy).slice(-2) + String(dayOfYear).padStart(3,'0'); // classic yyddd Julian date
+        case 'S': return String(yyyy) + String(mm).padStart(2,'0') + String(dd).padStart(2,'0'); // yyyymmdd
+        case 'U': return String(mm).padStart(2,'0') + '/' + String(dd).padStart(2,'0') + '/' + String(yyyy).slice(-2);
+        case 'E': return String(dd).padStart(2,'0') + '/' + String(mm).padStart(2,'0') + '/' + String(yyyy).slice(-2);
+        case 'O': return String(yyyy).slice(-2) + '/' + String(mm).padStart(2,'0') + '/' + String(dd).padStart(2,'0');
+        case 'D': return String(dayOfYear);
+        case 'W': return wdays[now.getDay()];
+        case 'N': return dd + ' ' + mons[mm-1] + ' ' + yyyy;
+        default: return yyyy + '-' + String(mm).padStart(2,'0') + '-' + String(dd).padStart(2,'0');
+      }
+    }
     case 'TIME': return new Date().toTimeString().slice(0,8);
     case 'DATATYPE': { const v=s(0); return (v.trim()!=='' && !isNaN(parseFloat(v)) && isFinite(v))?'NUM':'CHAR'; }
     case 'C2X': return Array.from(s(0)).map(ch=>ch.charCodeAt(0).toString(16).toUpperCase().padStart(2,'0')).join('');
@@ -1825,7 +1912,7 @@ function showLogon(){
   h+=line('','');
   h+=line('                         z / O S   T S O / E   L O G O N','white');
   h+=line('','');
-  h+=line('  Not a Licensed Material - Property developed by "Abhishek"','dim');
+  h+=line('  Not a Licensed Material - Property developed by "Abhishek"'','dim');
   h+=line('  NO COPYRIGHT Exits - SIMULATED MAINFRAME','dim');
   h+=line('','');
   h+=line('  USERID   ===> MFUSER','amber');
