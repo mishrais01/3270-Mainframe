@@ -51,10 +51,10 @@
   .white{color:var(--white); text-shadow:0 0 3px rgba(232,255,232,0.55);}
   .red{color:var(--red); text-shadow:0 0 3px rgba(255,85,85,0.55);}
   .dim{color:var(--green-dim);}
-  #cmdline{ display:flex; align-items:center; border-top:1px solid #113311; padding-top:6px; margin-top:6px; gap:6px; }
+  #cmdline{ display:flex; flex-wrap:wrap; align-items:center; border-top:1px solid #113311; padding-top:6px; margin-top:6px; gap:6px; }
   #prompt{color:var(--amber);}
   #cmdinput{
-    flex:1; background:transparent; border:none; outline:none; color:var(--white);
+    flex:1; min-width:80px; background:transparent; border:none; outline:none; color:var(--white);
     font-family:inherit; font-size:14px; text-shadow:0 0 3px rgba(232,255,232,0.55); letter-spacing:0.5px;
   }
   #pfbar{ display:flex; flex-wrap:wrap; gap:4px; padding:8px 0 2px 0; border-top:1px solid #113311; margin-top:6px; }
