@@ -145,26 +145,57 @@ function Rexx(program, opts){
   this.cursors = {}; // DB2 cursor state: name -> {sql, rows, columns, pos, open}
 }
 Rexx.prototype.run = function(){
+  // Fully synchronous / non-interactive driver: used by JCL, PANELS, and
+  // anywhere else that runs REXX to completion in one shot with no live
+  // terminal. Auto-answers '' for any PULL that would otherwise need real
+  // input -- matching real batch REXX, which has no terminal to read from.
+  this._prep();
   try{
-    const lines = this.preprocess(this.program);
-    this.flatLines = lines;
-    // Labels (a lone "NAME:" clause) are CALL/internal-routine landing points.
-    // They're not block boundaries -- normal sequential execution just falls
-    // through them, exactly like real REXX -- so this is purely a lookup
-    // table for the 'call' statement, built once up front.
-    this.labels = {};
-    lines.forEach((clause, idx)=>{
-      const lm = clause.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:$/);
-      if(lm) this.labels[lm[1].toUpperCase()] = idx;
-    });
-    const {stmts} = this.parseBlock(lines, 0, lines.length);
-    this.exec(stmts);
-  }catch(e){
-    if(e && e.__rexxExit){ /* normal exit */ }
-    else if(e && e.__rexxReturn){ if(typeof e.value==='number' && Number.isFinite(e.value)) this.rc = e.value; }
-    else{ this.output.push('*** REXX ERROR: ' + (e.message||e)); this.rc = this.rc || 12; }
-  }
+    let step = this._step();
+    while(!step.done){ step = this._step(''); }
+  }catch(e){ this._handleTopLevelError(e); }
   return {output:this.output, rc:this.rc, vars:this.vars};
+};
+Rexx.prototype.startInteractive = function(){
+  // Real pausable driver: used by the terminal's EX command. Returns
+  // {done, needInput, output, rc}; if needInput is true, call
+  // resumeInteractive(theTypedLine) to continue once the user answers.
+  this._prep();
+  return this._step();
+};
+Rexx.prototype.resumeInteractive = function(inputLine){
+  return this._step(inputLine);
+};
+Rexx.prototype._prep = function(){
+  const lines = this.preprocess(this.program);
+  this.flatLines = lines;
+  // Labels (a lone "NAME:" clause) are CALL/internal-routine landing points.
+  // They're not block boundaries -- normal sequential execution just falls
+  // through them, exactly like real REXX -- so this is purely a lookup
+  // table for the 'call' statement, built once up front.
+  this.labels = {};
+  lines.forEach((clause, idx)=>{
+    const lm = clause.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:$/);
+    if(lm) this.labels[lm[1].toUpperCase()] = idx;
+  });
+  const {stmts} = this.parseBlock(lines, 0, lines.length);
+  this._gen = this.exec(stmts);
+};
+Rexx.prototype._step = function(sendValue){
+  let res;
+  try{
+    res = (sendValue===undefined) ? this._gen.next() : this._gen.next(sendValue);
+  }catch(e){
+    this._handleTopLevelError(e);
+    return {done:true, needInput:false, output:this.output, rc:this.rc};
+  }
+  if(res.done) return {done:true, needInput:false, output:this.output, rc:this.rc};
+  return {done:false, needInput:true, output:this.output};
+};
+Rexx.prototype._handleTopLevelError = function(e){
+  if(e && e.__rexxExit){ /* normal exit */ }
+  else if(e && e.__rexxReturn){ if(typeof e.value==='number' && Number.isFinite(e.value)) this.rc = e.value; }
+  else{ this.output.push('*** REXX ERROR: ' + (e.message||e)); this.rc = this.rc || 12; }
 };
 Rexx.prototype.preprocess = function(src){
   let s = src.replace(/\/\*[\s\S]*?\*\//g,' ');
@@ -372,11 +403,11 @@ Rexx.prototype.parseSelect = function(lines,i,end){
   return {stmt:{type:'select',whens,otherwise}, next:i2};
 };
 const LEAVE=Symbol('leave'), ITERATE=Symbol('iterate');
-Rexx.prototype.exec = function(stmts){
-  for(const st of stmts){ const sig=this.execOne(st); if(sig===LEAVE||sig===ITERATE) return sig; }
+Rexx.prototype.exec = function*(stmts){
+  for(const st of stmts){ const sig = yield* this.execOne(st); if(sig===LEAVE||sig===ITERATE) return sig; }
   return null;
 };
-Rexx.prototype.execOne = function(st){
+Rexx.prototype.execOne = function*(st){
   this.steps++;
   if(this.steps>this.maxSteps) throw new Error('step limit exceeded (possible infinite loop)');
   switch(st.type){
@@ -414,7 +445,7 @@ Rexx.prototype.execOne = function(st){
       let returnValue = '';
       try{
         const {stmts} = this.parseBlock(this.flatLines, idx+1, this.flatLines.length);
-        this.exec(stmts);
+        yield* this.exec(stmts);
       }catch(e){
         if(e && e.__rexxReturn){ returnValue = e.value!==undefined? e.value : ''; }
         else { this.argString = savedArgString; throw e; }
@@ -431,7 +462,14 @@ Rexx.prototype.execOne = function(st){
       return null;
     }
     case 'pull': {
-      st.names.forEach((nm)=>{ const v=this.inputQueue.length? this.inputQueue.shift():''; this.vars[nm.toUpperCase()]=String(v).toUpperCase(); });
+      // If QUEUE/PUSH already staged a line, use it (unchanged data-stack
+      // behavior). Otherwise genuinely pause and wait for real terminal
+      // input -- driven by run() (auto-answers '', for batch/JCL/panels)
+      // or startInteractive()/resumeInteractive() (real pause, for EX).
+      let line;
+      if(this.inputQueue.length){ line = String(this.inputQueue.shift()); }
+      else { line = String((yield {kind:'pull'}) ?? ''); }
+      this.applyTemplate(line.toUpperCase(), st.names.map(n=>({type:'var', name:n})));
       return null;
     }
     case 'parsevalue': {
@@ -445,35 +483,37 @@ Rexx.prototype.execOne = function(st){
       return null;
     }
     case 'parsepull': {
-      const v = this.inputQueue.length? String(this.inputQueue.shift()) : '';
-      this.applyTemplate(v.toUpperCase(), st.template); // PULL-family uppercases input
+      let line;
+      if(this.inputQueue.length){ line = String(this.inputQueue.shift()); }
+      else { line = String((yield {kind:'pull'}) ?? ''); }
+      this.applyTemplate(line.toUpperCase(), st.template); // PULL-family uppercases input
       return null;
     }
     case 'if': {
-      if(this.truthy(this.evalExpr(st.cond))) return this.execOne(st.then);
-      else if(st.else) return this.execOne(st.else);
+      if(this.truthy(this.evalExpr(st.cond))) return yield* this.execOne(st.then);
+      else if(st.else) return yield* this.execOne(st.else);
       return null;
     }
     case 'select': {
-      for(const w of st.whens){ if(this.truthy(this.evalExpr(w.cond))) return this.execOne(w.stmt); }
-      return this.exec(st.otherwise);
+      for(const w of st.whens){ if(this.truthy(this.evalExpr(w.cond))) return yield* this.execOne(w.stmt); }
+      return yield* this.exec(st.otherwise);
     }
-    case 'do': return this.execDo(st);
+    case 'do': return yield* this.execDo(st);
     case 'leave': return LEAVE;
     case 'iterate': return ITERATE;
     default: return null;
   }
 };
-Rexx.prototype.execDo = function(st){
+Rexx.prototype.execDo = function*(st){
   const spec=st.spec;
-  if(spec.kind==='once'){ this.exec(st.body); return null; }
+  if(spec.kind==='once'){ yield* this.exec(st.body); return null; }
   if(spec.kind==='range'){
     let cur=this.toNumber(this.evalExpr(spec.start));
     const endV=this.toNumber(this.evalExpr(spec.end));
     const step=this.toNumber(this.evalExpr(spec.step));
     while((step>=0 && cur<=endV) || (step<0 && cur>=endV)){
       this.vars[spec.varName.toUpperCase()]=cur;
-      const sig=this.exec(st.body);
+      const sig = yield* this.exec(st.body);
       if(sig===LEAVE) break;
       cur+=step;
     }
@@ -481,14 +521,14 @@ Rexx.prototype.execDo = function(st){
   }
   if(spec.kind==='count'){
     let n=this.toNumber(this.evalExpr(spec.count));
-    for(let k=0;k<n;k++){ const sig=this.exec(st.body); if(sig===LEAVE) break; }
+    for(let k=0;k<n;k++){ const sig = yield* this.exec(st.body); if(sig===LEAVE) break; }
     return null;
   }
   if(spec.kind==='while'){
     let guard=0;
     while(this.truthy(this.evalExpr(spec.cond))){
       if(++guard>this.maxSteps) throw new Error('loop guard exceeded');
-      const sig=this.exec(st.body); if(sig===LEAVE) break;
+      const sig = yield* this.exec(st.body); if(sig===LEAVE) break;
     }
     return null;
   }
@@ -496,7 +536,7 @@ Rexx.prototype.execDo = function(st){
     let guard=0;
     while(true){
       if(++guard>this.maxSteps) throw new Error('loop guard exceeded');
-      const sig=this.exec(st.body); if(sig===LEAVE) break;
+      const sig = yield* this.exec(st.body); if(sig===LEAVE) break;
     }
     return null;
   }
@@ -529,28 +569,33 @@ Rexx.prototype.evalExpr = function(expr){ const toks=this.tokenizeExpr(expr); co
 Rexx.prototype.tokenizeExpr = function(str){
   let toks=[]; let i=0; const n=str.length;
   while(i<n){
+    let skippedSpace=false;
+    while(i<n && /\s/.test(str[i])){ i++; skippedSpace=true; }
+    if(i>=n) break;
     const c=str[i];
-    if(/\s/.test(c)){ i++; continue; }
+    const blank=skippedSpace; // whether real whitespace preceded this token -- distinguishes
+                              // true abuttal concatenation ("a"b, no space) from blank-concat
+                              // ("a" b, a real space), which REXX treats differently (see parseConcat)
     if(c==='"'||c==="'"){
       const q=c; let j=i+1; let val='';
       while(j<n){ if(str[j]===q){ if(str[j+1]===q){ val+=q; j+=2; continue;} break;} val+=str[j]; j++; }
-      toks.push({t:'str',v:val}); i=j+1; continue;
+      toks.push({t:'str',v:val,blank}); i=j+1; continue;
     }
-    if(str.startsWith('||',i)){ toks.push({t:'op',v:'||'}); i+=2; continue; }
-    if(str.startsWith('==',i)){ toks.push({t:'op',v:'=='}); i+=2; continue; }
-    if(str.startsWith('\\==',i)){ toks.push({t:'op',v:'\\=='}); i+=3; continue; }
-    if(str.startsWith('\\=',i)){ toks.push({t:'op',v:'\\='}); i+=2; continue; }
-    if(str.startsWith('<>',i)){ toks.push({t:'op',v:'\\='}); i+=2; continue; }
-    if(str.startsWith('>=',i)){ toks.push({t:'op',v:'>='}); i+=2; continue; }
-    if(str.startsWith('<=',i)){ toks.push({t:'op',v:'<='}); i+=2; continue; }
-    if(str.startsWith('**',i)){ toks.push({t:'op',v:'**'}); i+=2; continue; }
-    if(str.startsWith('//',i)){ toks.push({t:'op',v:'//'}); i+=2; continue; }
-    if('+-*/=()<>&|,\\'.includes(c)){ toks.push({t:'op',v:c}); i++; continue; }
-    if(/[0-9.]/.test(c)){ let j=i; while(j<n && /[0-9.]/.test(str[j])) j++; toks.push({t:'num',v:parseFloat(str.slice(i,j))}); i=j; continue; }
+    if(str.startsWith('||',i)){ toks.push({t:'op',v:'||',blank}); i+=2; continue; }
+    if(str.startsWith('==',i)){ toks.push({t:'op',v:'==',blank}); i+=2; continue; }
+    if(str.startsWith('\\==',i)){ toks.push({t:'op',v:'\\==',blank}); i+=3; continue; }
+    if(str.startsWith('\\=',i)){ toks.push({t:'op',v:'\\=',blank}); i+=2; continue; }
+    if(str.startsWith('<>',i)){ toks.push({t:'op',v:'\\=',blank}); i+=2; continue; }
+    if(str.startsWith('>=',i)){ toks.push({t:'op',v:'>=',blank}); i+=2; continue; }
+    if(str.startsWith('<=',i)){ toks.push({t:'op',v:'<=',blank}); i+=2; continue; }
+    if(str.startsWith('**',i)){ toks.push({t:'op',v:'**',blank}); i+=2; continue; }
+    if(str.startsWith('//',i)){ toks.push({t:'op',v:'//',blank}); i+=2; continue; }
+    if('+-*/=()<>&|,\\'.includes(c)){ toks.push({t:'op',v:c,blank}); i++; continue; }
+    if(/[0-9.]/.test(c)){ let j=i; while(j<n && /[0-9.]/.test(str[j])) j++; toks.push({t:'num',v:parseFloat(str.slice(i,j)),blank}); i=j; continue; }
     let j=i; while(j<n && /[A-Za-z0-9_.!?]/.test(str[j])) j++;
     if(j===i){ i++; continue; }
     const word=str.slice(i,j);
-    if(str[j]==='(') toks.push({t:'func',v:word}); else toks.push({t:'id',v:word});
+    if(str[j]==='(') toks.push({t:'func',v:word,blank}); else toks.push({t:'id',v:word,blank});
     i=j;
   }
   return toks;
@@ -594,7 +639,16 @@ Rexx.prototype.parseConcat = function(p){
   while(this.peek(p)){
     const t=this.peek(p);
     if(t.t==='op' && t.v==='||'){ this.next(p); const right=this.parseAdd(p); left=this.toStr(left)+this.toStr(right); }
-    else if(t.t==='str'||t.t==='num'||t.t==='id'||t.t==='func'){ const right=this.parseAdd(p); left=this.toStr(left)+' '+this.toStr(right); }
+    else if(t.t==='str'||t.t==='num'||t.t==='id'||t.t==='func'){
+      // Real whitespace before this term (e.g. SAY 'x=' x) inserts a space
+      // (REXX "blank concatenation"); true abuttal with none (e.g. the
+      // standard "'literal'"var"'more'" idiom for building exact strings,
+      // as in ALLOC DD(IN) DSN('"DS"') SHR) concatenates with NO space --
+      // getting this wrong silently corrupts built strings like DSNs.
+      const insertSpace = t.blank;
+      const right=this.parseAdd(p);
+      left = insertSpace ? (this.toStr(left)+' '+this.toStr(right)) : (this.toStr(left)+this.toStr(right));
+    }
     else break;
   }
   return left;
@@ -1143,9 +1197,12 @@ function renderFatalError(context, err){
 window.addEventListener('error', (e)=>{ renderFatalError('script error', (e && e.error) || (e && e.message) || e); });
 window.addEventListener('unhandledrejection', (e)=>{ renderFatalError('unhandled promise rejection', e && e.reason); });
 
-let STATE = { screen:'logon', currentMember:null, editStore:'members', jobCounter:1000, jobs:[], sdsfDetailIdx:null, userid:'MFUSER', panelMsg:null, panelReturnTo:null, histIdx:null, histDraft:'', lastFind:null };
+let STATE = { screen:'logon', currentMember:null, editStore:'members', jobCounter:1000, jobs:[], sdsfDetailIdx:null, userid:'MFUSER', panelMsg:null, panelReturnTo:null, histIdx:null, histDraft:'', lastFind:null, currentLibrary:'MFUSER.EXEC.LIBRARY' };
 
-let MEMBERS = {};   // PDS "MFUSER.EXEC.LIBRARY": name -> {type:'REXX'|'JCL'|'TEXT'|'PANEL', content:string}
+let LIBRARIES = {}; // catalog of PDS libraries: pdsName -> {members: {name -> {type,content}}}
+let MEMBERS = {};   // ALWAYS an alias for LIBRARIES[STATE.currentLibrary].members -- reassigned whenever
+                     // the current library changes (see setCurrentLibrary()). Existing code throughout
+                     // the app reads/writes MEMBERS directly and keeps working unmodified either way.
 let DATASETS = {};  // catalog of PS datasets: dsn -> {records:[...]}
 let TABLES = {};    // DB2 catalog: tablename -> {columns:[{name,type}], rows:[{...}]}
 let ISPF_POOL = {}; // shared ISPF variable pool (like real ISPF's shared screen pool): name -> value, used by panels + ADDRESS ISPEXEC VGET/VPUT
@@ -1501,6 +1558,69 @@ SAY 'Go back to PANELS (option 9) and run EMPLOOKUP again to see the result.'
 EXIT 0`},
 };
 
+// ---------------------------------------------------------------------
+// LIBRARY (PDS) MANAGEMENT
+// Multiple named libraries, each holding its own set of REXX/JCL/TEXT/
+// PANEL members -- the same relationship DATASETS already has to
+// individual PS datasets. STATE.currentLibrary tracks which one is
+// "allocated" right now; MEMBERS always aliases that library's members
+// object, so every existing MEMBERS[...] reference elsewhere in the app
+// keeps working unmodified no matter which library is active.
+// ---------------------------------------------------------------------
+function setCurrentLibrary(name){
+  STATE.currentLibrary = name;
+  MEMBERS = LIBRARIES[name].members;
+}
+function doAllocPds(name){
+  const nm=(name||'').toUpperCase();
+  if(!nm){ appendResultScreen('ALLOCPDS', [{text:'Usage: ALLOCPDS <pds-name>'}]); return; }
+  if(LIBRARIES[nm]){ appendResultScreen('ALLOCPDS', [{text:'Library already exists: ' + nm}]); return; }
+  LIBRARIES[nm] = {members:{}};
+  saveState();
+  logActivity('ALLOCPDS', nm);
+  appendResultScreen('ALLOCPDS', [
+    {text:'IEF285I ' + nm + ' CATALOGED (new empty PDS)', cls:'green'},
+    {text:'Type USE ' + nm + ' to switch to it, then NEW/EDIT to add members.'},
+  ]);
+}
+function doUsePds(name){
+  const nm=(name||'').toUpperCase();
+  if(!nm){ appendResultScreen('USE', [{text:'Usage: USE <pds-name>'}]); return; }
+  if(!LIBRARIES[nm]){ appendResultScreen('USE', [{text:'Library not found: ' + nm}, {text:'Type LISTPDS to see what exists, or ALLOCPDS ' + nm + ' to create it.'}]); return; }
+  setCurrentLibrary(nm);
+  saveState();
+  logActivity('USE', nm);
+  showLibrary();
+}
+function doListPds(){
+  const names = Object.keys(LIBRARIES).sort();
+  const body = names.map(nm => ({
+    text: '  ' + (nm===STATE.currentLibrary? '*':' ') + ' ' + nm.padEnd(28) + Object.keys(LIBRARIES[nm].members).length + ' member(s)',
+    cls: nm===STATE.currentLibrary? 'green' : undefined,
+  }));
+  appendResultScreen('PDS LIBRARIES', [
+    {text:'  * = currently active (what EX/EDIT/SUB/etc. operate on)', cls:'dim'},
+    {text:''},
+    ...body,
+    {text:''},
+    {text:'Commands: USE name   ALLOCPDS name   DELPDS name', cls:'blue'},
+  ]);
+}
+function doDelPds(name){
+  const nm=(name||'').toUpperCase();
+  if(!nm || !LIBRARIES[nm]){ appendResultScreen('DELPDS', [{text:'Library not found: ' + nm}]); return; }
+  if(Object.keys(LIBRARIES).length <= 1){ appendResultScreen('DELPDS', [{text:'Cannot delete the last remaining library.'}]); return; }
+  const wasCurrent = (nm === STATE.currentLibrary);
+  delete LIBRARIES[nm];
+  if(wasCurrent) setCurrentLibrary(Object.keys(LIBRARIES).sort()[0]);
+  saveState();
+  logActivity('DELPDS', nm);
+  appendResultScreen('DELPDS', [
+    {text:'IDC0001I FUNCTION COMPLETED, DELETE ' + nm, cls:'green'},
+    ...(wasCurrent? [{text:'Switched current library to ' + STATE.currentLibrary + '.'}] : []),
+  ]);
+}
+
 const DEFAULT_DATASETS = {
   'MFUSER.TEST.DATA': { records: ['FIRST TEST RECORD', 'SECOND TEST RECORD', 'THIRD TEST RECORD'] }
 };
@@ -1683,7 +1803,8 @@ const LS_KEY = 'mf3270_desktop_session_v1';
 function currentSessionBlob(){
   return {
     savedAt: new Date().toISOString(),
-    members: MEMBERS,
+    libraries: LIBRARIES,
+    currentLibrary: STATE.currentLibrary,
     datasets: DATASETS,
     tables: TABLES,
     jobCounter: STATE.jobCounter,
@@ -1694,7 +1815,17 @@ function currentSessionBlob(){
   };
 }
 function applySessionBlob(blob){
-  MEMBERS = blob.members || JSON.parse(JSON.stringify(DEFAULT_MEMBERS));
+  if(blob.libraries && Object.keys(blob.libraries).length){
+    LIBRARIES = blob.libraries;
+  } else if(blob.members){
+    // migrate a pre-multi-library session: wrap its flat member set as the default PDS
+    LIBRARIES = { 'MFUSER.EXEC.LIBRARY': { members: blob.members } };
+  } else {
+    LIBRARIES = { 'MFUSER.EXEC.LIBRARY': { members: JSON.parse(JSON.stringify(DEFAULT_MEMBERS)) } };
+  }
+  const wantLib = (blob.currentLibrary && LIBRARIES[blob.currentLibrary]) ? blob.currentLibrary : Object.keys(LIBRARIES).sort()[0];
+  STATE.currentLibrary = wantLib;
+  MEMBERS = LIBRARIES[wantLib].members;
   DATASETS = blob.datasets || JSON.parse(JSON.stringify(DEFAULT_DATASETS));
   TABLES = blob.tables || JSON.parse(JSON.stringify(DEFAULT_TABLES));
   db2.tables = TABLES;
@@ -1937,7 +2068,7 @@ function showLogon(){
   h+=line('','');
   h+=line('                         z / O S   T S O / E   L O G O N','white');
   h+=line('','');
-  h+=line('  Not a Licensed Material - Property developed by "Abhishek"','dim');
+  h+=line('  Not a Licensed Product - developed by "Abhishek"','dim');
   h+=line('  NO COPYRIGHT Exits - SIMULATED MAINFRAME','dim');
   h+=line('','');
   h+=line('  USERID   ===> MFUSER','amber');
@@ -1973,7 +2104,7 @@ function showPrimaryMenu(){
   h+=line('OPTION ===>','amber');
   h+=line('','');
   h+=line('  0  SETTINGS     - Terminal / user parameters','green');
-  h+=line('  1  LIBRARY      - Browse your PDS (REXX execs, JCL, text members)','green');
+  h+=line('  1  LIBRARY      - Browse the current PDS (REXX/JCL/TEXT/PANEL members)','green');
   h+=line('  2  EDIT         - Edit or create a member','green');
   h+=line('  3  RUN REXX     - Execute a REXX exec directly (like TSO EXEC)','green');
   h+=line('  4  SUBMIT JCL   - Submit a JCL member as a batch job','green');
@@ -2000,9 +2131,11 @@ function showPrimaryMenu(){
 function showLibrary(){
   STATE.screen='library';
   let h='';
-  h+=line('MFUSER.EXEC.LIBRARY   ---------  MEMBER LIST  ---------','white');
+  h+=line(STATE.currentLibrary + '   ---------  MEMBER LIST  ---------','white');
   h+=line('COMMAND ===>                                    ROW 1 TO ' + Object.keys(MEMBERS).length,'amber');
   h+=line('','');
+  const otherLibs = Object.keys(LIBRARIES).filter(n=>n!==STATE.currentLibrary).sort();
+  if(otherLibs.length) h+=line('  Other libraries: ' + otherLibs.join(', ') + '  (USE name to switch)','dim');
   h+=line('  NAME        TYPE    LINES   ACTION','dim');
   const names = Object.keys(MEMBERS).sort();
   if(names.length===0) h+=line('  (empty - use EDIT to create a member)','dim');
@@ -2015,6 +2148,7 @@ function showLibrary(){
   h+=line('  Commands: E name (edit)   EX name (run REXX)   SUB name (submit JCL)','blue');
   h+=line('            DEL name (delete)   NEW name TYPE (create; TYPE=REXX/JCL/TEXT/PANEL)','blue');
   h+=line('            DOWNLOAD name (save to a local .txt)   UPLOAD name (load a local .txt)','blue');
+  h+=line('            USE pds (switch library)   ALLOCPDS pds (new library)   LISTPDS   DELPDS pds','blue');
   h+=line('            M (main menu)','blue');
   setScreen(h);
   setPF([{label:'PF3 MENU', cmd:'M'},{label:'PF12 MENU', cmd:'M'}]);
@@ -2219,10 +2353,14 @@ function showCommandScreen(){
   h+=line('','');
   h+=line('  EX name [args]     - run a REXX exec','green');
   h+=line('  SUBMIT name        - submit a JCL member (also: SUB)','green');
-  h+=line('  LIST / LIBRARY     - list exec-library members','green');
+  h+=line('  LIST / LIBRARY     - list members in the CURRENT library','green');
   h+=line('  EDIT name          - edit/create a member','green');
   h+=line('  DEL name           - delete a member','green');
   h+=line('  NEW name TYPE      - create empty member (TYPE=REXX/JCL/TEXT)','green');
+  h+=line('  ALLOCPDS pds       - create a new, separate library (PDS)','green');
+  h+=line('  USE pds            - switch which library EX/EDIT/SUB/etc. operate on','green');
+  h+=line('  LISTPDS / LIBS     - list all libraries and which one is current','green');
+  h+=line('  DELPDS pds         - delete an entire library (all its members)','green');
   h+=line('  SDSF               - view job queue','green');
   h+=line('  DATASETS / LISTCAT - view dataset catalog','green');
   h+=line('  ALLOC dsn          - allocate a new empty dataset','green');
@@ -3036,6 +3174,24 @@ function handleCommand(raw){
     return;
   }
 
+  if(STATE.screen==='rexxrun'){
+    // A REXX program is paused mid-execution at a PULL. Whatever was typed
+    // goes straight to it as the literal answer -- no app-level shortcuts
+    // (M, X, HELP, ...) apply here, exactly like a real terminal mid-prompt;
+    // only the PF12 CANCEL button (a sentinel, never a real typed value)
+    // escapes out early.
+    if(cmdRaw==='__REXX_CANCEL__'){
+      STATE.pendingRexx = null;
+      appendResultScreen('REXX CANCELLED', [{text:'Execution stopped before completion.'}]);
+      return;
+    }
+    const pending = STATE.pendingRexx;
+    const step = pending.rexx.resumeInteractive(cmdRaw);
+    if(step.needInput){ showRexxRun(step.output); }
+    else{ finishRexxRun(pending.rexx, pending.name, pending.args, step); STATE.pendingRexx = null; }
+    return;
+  }
+
   const cmd = cmdRaw;
   const upper = cmd.toUpperCase();
   const parts = cmd.split(/\s+/).filter(Boolean);
@@ -3047,7 +3203,7 @@ function handleCommand(raw){
     if(upper==='DISCONNECT'){ disconnectFolder(); return; }
     if(upper==='RECONNECT'){ reconnectPending(); return; }
     if(upper==='HELP'){ appendResultScreen('HELP', [
-      {text:'This is a simulated 3270 / TSO / ISPF environment devloped by Abhishek.'},
+      {text:'This is a simulated 3270 / TSO / ISPF environment devloped by Abhishek.''},
       {text:'Type LOGON to sign on, then use the ISPF menu or type'},
       {text:'commands like EX, SUBMIT, EDIT, LIST, ALLOC directly.'},
     ]); return; }
@@ -3136,6 +3292,10 @@ function handleCommand(raw){
     if(verb==='ALLOC'){ doAllocDataset(parts[1]); return; }
     if(verb==='BROWSE'){ showBrowseDataset((parts[1]||'').toUpperCase()); return; }
     if(verb==='DELDS'){ doDeleteDataset(parts[1]); return; }
+    if(verb==='ALLOCPDS'){ doAllocPds(parts[1]); return; }
+    if(verb==='USE' || verb==='LIB'){ doUsePds(parts[1]); return; }
+    if(verb==='LISTPDS' || verb==='LIBS'){ doListPds(); return; }
+    if(verb==='DELPDS'){ doDelPds(parts[1]); return; }
     appendResultScreen('UNKNOWN OPTION', [{text:'"' + cmd + '" is not a valid option. Choose 0-9 or X.'}]);
     return;
   }
@@ -3161,6 +3321,10 @@ function handleCommand(raw){
     if(verb==='SUB'){ doSubmit(parts[1]); return; }
     if(verb==='DEL'){ doDelete(parts[1]); return; }
     if(verb==='NEW'){ doNew(parts[1], parts[2]); return; }
+    if(verb==='ALLOCPDS'){ doAllocPds(parts[1]); return; }
+    if(verb==='USE' || verb==='LIB'){ doUsePds(parts[1]); return; }
+    if(verb==='LISTPDS' || verb==='LIBS'){ doListPds(); return; }
+    if(verb==='DELPDS'){ doDelPds(parts[1]); return; }
     showLibrary(); return;
   }
 
@@ -3205,6 +3369,10 @@ function handleCommand(raw){
     if(verb==='DB2' || verb==='SPUFI'){ showSPUFI(); return; }
     if(verb==='PANELS'){ showPanelsList(); return; }
     if(verb==='LOG'){ showActivityLog(parts.slice(1).join(' ')); return; }
+    if(verb==='ALLOCPDS'){ doAllocPds(parts[1]); return; }
+    if(verb==='USE' || verb==='LIB'){ doUsePds(parts[1]); return; }
+    if(verb==='LISTPDS' || verb==='LIBS'){ doListPds(); return; }
+    if(verb==='DELPDS'){ doDelPds(parts[1]); return; }
     appendResultScreen('UNKNOWN COMMAND', [{text:'"' + cmd + '" not recognized. Type HELP for a list.'}]);
     return;
   }
@@ -3219,17 +3387,39 @@ function doRunRexx(argParts){
   const mem = MEMBERS[name];
   if(!mem || mem.type!=='REXX'){ appendResultScreen('RUN REXX', [{text:name + ' is not a REXX member.'}]); return; }
   const r = new Rexx(mem.content, {argString: args, hostCommandHandler});
-  const res = r.run();
+  const step = r.startInteractive();
+  if(step.needInput){
+    STATE.pendingRexx = {rexx:r, name, args};
+    showRexxRun(step.output);
+    return;
+  }
+  finishRexxRun(r, name, args, step);
+}
+function finishRexxRun(r, name, args, step){
   saveState();
-  logActivity('EXEC', name + (args? ' '+args:'') + '  RC=' + res.rc);
+  logActivity('EXEC', name + (args? ' '+args:'') + '  RC=' + step.rc);
   let body = [];
   body.push({text:'READY  EX ' + name + (args? ' '+args:''), cls:'amber'});
   body.push({text:''});
-  if(res.output.length===0) body.push({text:'(no SAY output produced)', cls:'dim'});
-  res.output.forEach(o=>body.push({text: o}));
+  if(step.output.length===0) body.push({text:'(no SAY output produced)', cls:'dim'});
+  step.output.forEach(o=>body.push({text: o}));
   body.push({text:''});
-  body.push({text:'*** ' + name + ' ENDED, RC=' + res.rc + ' ***', cls: res.rc>0?'amber':'green'});
+  body.push({text:'*** ' + name + ' ENDED, RC=' + step.rc + ' ***', cls: step.rc>0?'amber':'green'});
   appendResultScreen('REXX EXECUTION: ' + name, body);
+}
+function showRexxRun(outputLines){
+  STATE.screen='rexxrun';
+  let h='';
+  h+=line('REXX EXECUTION: ' + STATE.pendingRexx.name + '   -- WAITING FOR INPUT --','white');
+  h+=line('','');
+  if(outputLines.length===0) h+=line('  (no output yet)','dim');
+  outputLines.forEach(o=>h+=line(o,'green'));
+  h+=line('','');
+  h+=line('  This program is paused at a PULL. Type a value and press Enter --','blue');
+  h+=line('  it goes straight to the program as typed, exactly like a real terminal.','blue');
+  setScreen(h);
+  setPF([{label:'PF12 CANCEL', cmd:'__REXX_CANCEL__'}]);
+  cmdInput.placeholder = 'Input for ' + STATE.pendingRexx.name + ' ===>';
 }
 
 function doSubmit(name){
