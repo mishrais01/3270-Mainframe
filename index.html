@@ -1,0 +1,3459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>3270 Mainframe Terminal — Desktop</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="3270 MF">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<style>
+  :root{
+    --bg:#000000;
+    --green:#33ff66;
+    --green-dim:#1c8f3d;
+    --amber:#ffb000;
+    --blue:#5ad1ff;
+    --white:#e8ffe8;
+    --red:#ff5555;
+    --field-bg:#001a00;
+  }
+  *{box-sizing:border-box;}
+  html,body{ height:100%; margin:0; overflow:hidden; background:#000; font-family:'IBM Plex Mono','Consolas','Courier New',monospace; }
+  #crt{
+    width:100%; max-width:960px; margin:0 auto; background:var(--bg); color:var(--green);
+    padding:14px 18px 10px 18px; height:var(--app-vh, 100%); min-height:0; display:flex; flex-direction:column;
+    border:2px solid #111; border-radius:6px;
+    box-shadow: inset 0 0 60px rgba(51,255,102,0.06), 0 0 30px rgba(0,0,0,0.6);
+    position:relative; overflow:hidden;
+  }
+  #crt::before{
+    content:""; position:absolute; inset:0;
+    background:repeating-linear-gradient(rgba(0,0,0,0) 0px, rgba(0,0,0,0) 1px, rgba(0,0,0,0.12) 2px);
+    pointer-events:none; mix-blend-mode:multiply;
+  }
+  /* min-height:0 overrides the flex-item default of min-height:auto, which
+     would otherwise force #screen to grow to fit its content and push
+     #cmdline/#pfbar off the bottom of the window -- flex:1 + min-height:0
+     is what makes overflow-y:auto actually scroll *inside* this box
+     instead of the whole page scrolling and hiding the PF keys below it. */
+  #screen{
+    flex:1; min-height:0; white-space:pre-wrap; font-size:13.5px; line-height:1.33; letter-spacing:0.4px;
+    text-shadow:0 0 3px rgba(51,255,102,0.55); overflow-y:auto;
+  }
+  .amber{color:var(--amber); text-shadow:0 0 3px rgba(255,176,0,0.55);}
+  .blue{color:var(--blue); text-shadow:0 0 3px rgba(90,209,255,0.55);}
+  .white{color:var(--white); text-shadow:0 0 3px rgba(232,255,232,0.55);}
+  .red{color:var(--red); text-shadow:0 0 3px rgba(255,85,85,0.55);}
+  .dim{color:var(--green-dim);}
+  #cmdline{ display:flex; flex-wrap:wrap; align-items:center; border-top:1px solid #113311; padding-top:6px; margin-top:6px; gap:6px; }
+  #prompt{color:var(--amber);}
+  #cmdinput{
+    flex:1; min-width:80px; background:transparent; border:none; outline:none; color:var(--white);
+    font-family:inherit; font-size:14px; text-shadow:0 0 3px rgba(232,255,232,0.55); letter-spacing:0.5px;
+  }
+  #pfbar{ display:flex; flex-wrap:wrap; gap:4px; padding:8px 0 2px 0; border-top:1px solid #113311; margin-top:6px; }
+  .pfkey{
+    background:#001a00; border:1px solid var(--green-dim); color:var(--green); font-family:inherit;
+    font-size:11px; padding:4px 7px; border-radius:3px; cursor:pointer;
+  }
+  .pfkey:hover{background:#0a3a0a;}
+  /* findNextBtn's label is CSS-generated content (not a real text node) so
+     window.find() never matches the button itself while repeating a search. */
+  #findNextBtn::after{ content: attr(data-label); }
+  #editArea{
+    width:100%; flex:1; min-height:400px; background:#000; color:var(--white);
+    border:1px solid var(--green-dim); font-family:inherit; font-size:13px; line-height:1.3;
+    padding:6px; resize:none; outline:none; text-shadow:0 0 3px rgba(232,255,232,0.4);
+  }
+  .ispf-field{
+    background:var(--field-bg); border:1px solid var(--green-dim); color:var(--white);
+    font-family:inherit; font-size:13.5px; letter-spacing:0.4px; padding:0 2px; outline:none;
+    text-shadow:0 0 3px rgba(232,255,232,0.4);
+  }
+  .ispf-field:focus{ border-color:var(--amber); box-shadow:0 0 4px rgba(255,176,0,0.5); }
+  ::selection{background:var(--green); color:#000;}
+  #screen::-webkit-scrollbar{width:8px;}
+  #screen::-webkit-scrollbar-thumb{background:var(--green-dim); border-radius:4px;}
+  .hdr{display:flex; justify-content:space-between; color:var(--green-dim); font-size:12px; margin-bottom:4px;}
+
+  /* Mobile / PWA standalone adjustments */
+  html,body{ overscroll-behavior:none; }
+  #crt{
+    padding-top: max(14px, env(safe-area-inset-top));
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    padding-left: max(18px, env(safe-area-inset-left));
+    padding-right: max(18px, env(safe-area-inset-right));
+  }
+  .pfkey{ padding:8px 10px; font-size:12px; } /* larger touch targets than the desktop default */
+  #cmdinput{ font-size:16px; } /* avoids auto-zoom-on-focus on some mobile browsers */
+  @media (max-width: 480px){
+    #crt{ border-radius:0; border-width:0; height:var(--app-vh, 100dvh); }
+    #screen{ font-size:12.5px; }
+    .hdr{ font-size:10.5px; }
+  }
+</style>
+</head>
+<body>
+<div id="crt">
+  <div class="hdr"><span id="hdrLeft">z/OS 3270 EMULATOR</span><span id="hdrRight"></span></div>
+  <div id="screen"></div>
+  <textarea id="editArea" style="display:none;" spellcheck="false"></textarea>
+  <div id="cmdline">
+    <span id="prompt">===&gt;</span>
+    <input id="cmdinput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="" />
+    <button id="findNextBtn" class="pfkey" style="display:none;" title="Repeat last find (like ISPF PF5/RFIND)" data-label="PF5 NEXT"></button>
+    <button id="downloadBtn" class="pfkey" title="Download a member or dataset to a local file">DOWNLOAD</button>
+    <button id="uploadBtn" class="pfkey" title="Load a local text file into a member or dataset">UPLOAD</button>
+  </div>
+  <div id="pfbar"></div>
+  <input type="file" id="importFileInput" accept=".json" style="display:none;" />
+  <input type="file" id="uploadFileInput" accept=".txt,text/plain" style="display:none;" />
+</div>
+
+<script>
+(function(){
+
+// =====================================================================
+// ---------------------------- REXX ENGINE ----------------------------
+// Real (subset) REXX interpreter: SAY, assignment, IF/THEN/ELSE, DO loops
+// (range/WHILE/FOREVER/count), SELECT/WHEN, LEAVE/ITERATE, ARG/PULL/PARSE,
+// EXIT/RETURN, arithmetic + string functions, compound (stem) variables,
+// and ADDRESS TSO host-command support (ALLOC/FREE/EXECIO/etc via a
+// pluggable hostCommandHandler) so REXX execs can genuinely read & write
+// datasets, matching real TSO/REXX idioms.
+// =====================================================================
+function Rexx(program, opts){
+  opts = opts || {};
+  this.output = [];
+  this.vars = {};
+  this.argString = opts.argString || '';
+  this.inputQueue = (opts.inputQueue || []).slice();
+  this.rc = 0;
+  this.print = (s)=>this.output.push(s);
+  this.maxSteps = 200000;
+  this.steps = 0;
+  this.program = program;
+  this.address = 'TSO';
+  this.hostCommandHandler = opts.hostCommandHandler || null;
+  this.allocs = opts.initialAllocs ? Object.assign({}, opts.initialAllocs) : {};
+  this.cursors = {}; // DB2 cursor state: name -> {sql, rows, columns, pos, open}
+}
+Rexx.prototype.run = function(){
+  try{
+    const lines = this.preprocess(this.program);
+    this.flatLines = lines;
+    // Labels (a lone "NAME:" clause) are CALL/internal-routine landing points.
+    // They're not block boundaries -- normal sequential execution just falls
+    // through them, exactly like real REXX -- so this is purely a lookup
+    // table for the 'call' statement, built once up front.
+    this.labels = {};
+    lines.forEach((clause, idx)=>{
+      const lm = clause.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:$/);
+      if(lm) this.labels[lm[1].toUpperCase()] = idx;
+    });
+    const {stmts} = this.parseBlock(lines, 0, lines.length);
+    this.exec(stmts);
+  }catch(e){
+    if(e && e.__rexxExit){ /* normal exit */ }
+    else if(e && e.__rexxReturn){ if(typeof e.value==='number' && Number.isFinite(e.value)) this.rc = e.value; }
+    else{ this.output.push('*** REXX ERROR: ' + (e.message||e)); this.rc = this.rc || 12; }
+  }
+  return {output:this.output, rc:this.rc, vars:this.vars};
+};
+Rexx.prototype.preprocess = function(src){
+  let s = src.replace(/\/\*[\s\S]*?\*\//g,' ');
+  const rawLines = s.split(/\r?\n/);
+  let joined=[]; let buf='';
+  for(let raw of rawLines){
+    let trimmed = raw.trim();
+    buf = buf ? buf + ' ' + trimmed : trimmed;
+    if(buf.endsWith(',')){ buf = buf.slice(0,-1)+' '; continue; }
+    joined.push(buf); buf='';
+  }
+  if(buf) joined.push(buf);
+  let clauses=[];
+  for(let line of joined){
+    if(!line.trim()) continue;
+    let parts = this.splitRespectingQuotes(line, ';');
+    for(let p of parts){ const t=p.trim(); if(t) clauses.push(t); }
+  }
+  return clauses;
+};
+Rexx.prototype.splitRespectingQuotes = function(str, sep){
+  let out=[]; let cur=''; let q=null;
+  for(let i=0;i<str.length;i++){
+    const c=str[i];
+    if(q){ cur+=c; if(c===q) q=null; }
+    else if(c==='"'||c==="'"){ q=c; cur+=c; }
+    else if(c===sep){ out.push(cur); cur=''; }
+    else cur+=c;
+  }
+  if(cur.trim()!==''||out.length===0) out.push(cur);
+  return out;
+};
+Rexx.prototype.firstWord = function(clause){ const m=clause.match(/^\s*([^\s]+)/); return m? m[1].toUpperCase():''; };
+// PARSE template support (used by PARSE VALUE/ARG/PULL): tokenize a
+// template into {type:'var',name} / {type:'lit',value} tokens, then apply
+// it against a source string per real REXX PARSE semantics -- a var
+// immediately followed by a literal captures up to that literal; a var
+// followed by another var (no literal) does blank-delimited word
+// extraction; the LAST token, if a var, captures the whole remainder.
+Rexx.prototype.tokenizeTemplate = function(str){
+  let tokens=[]; let i=0; const n=str.length;
+  while(i<n){
+    while(i<n && /\s/.test(str[i])) i++;
+    if(i>=n) break;
+    if(str[i]==="'" || str[i]==='"'){
+      const q=str[i]; let j=i+1, val='';
+      while(j<n){ if(str[j]===q){ if(str[j+1]===q){ val+=q; j+=2; continue;} break;} val+=str[j]; j++; }
+      tokens.push({type:'lit', value:val}); i=j+1;
+    } else {
+      let j=i; while(j<n && !/\s/.test(str[j])) j++;
+      tokens.push({type:'var', name:str.slice(i,j)}); i=j;
+    }
+  }
+  return tokens;
+};
+Rexx.prototype.applyTemplate = function(source, template){
+  let cursor=0; const n=source.length;
+  const skipBlanks = () => { while(cursor<n && /\s/.test(source[cursor])) cursor++; };
+  for(let idx=0; idx<template.length; idx++){
+    const tok=template[idx];
+    if(tok.type==='lit'){
+      const foundAt=source.indexOf(tok.value, cursor);
+      cursor = foundAt>=0? foundAt+tok.value.length : n;
+      continue;
+    }
+    const next=template[idx+1];
+    if(next && next.type==='lit'){
+      const foundAt=source.indexOf(next.value, cursor);
+      const stop = foundAt>=0? foundAt : n;
+      this.vars[tok.name.toUpperCase()] = source.substring(cursor, stop);
+      cursor = stop;
+    } else if(idx===template.length-1){
+      skipBlanks();
+      this.vars[tok.name.toUpperCase()] = source.substring(cursor);
+      cursor = n;
+    } else {
+      skipBlanks();
+      const start=cursor;
+      while(cursor<n && !/\s/.test(source[cursor])) cursor++;
+      this.vars[tok.name.toUpperCase()] = source.substring(start, cursor);
+    }
+  }
+};
+Rexx.prototype.parseBlock = function(lines,start,end){
+  let stmts=[]; let i=start;
+  while(i<end){
+    const clause=lines[i]; const kw=this.firstWord(clause);
+    if(kw==='END') return {stmts,next:i};
+    if(kw==='ELSE') return {stmts,next:i};
+    const parsed=this.parseOne(lines,i,end);
+    stmts.push(parsed.stmt); i=parsed.next;
+  }
+  return {stmts,next:i};
+};
+Rexx.prototype.parseOne = function(lines,i,end){
+  const clause=lines[i];
+  const labelMatch = clause.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:$/);
+  if(labelMatch) return {stmt:{type:'label', name:labelMatch[1]}, next:i+1};
+  const kw=this.firstWord(clause); const rest=clause.slice(kw.length).trim();
+  if(kw==='SAY') return {stmt:{type:'say',expr:rest}, next:i+1};
+  if(kw==='EXIT') return {stmt:{type:'exit',expr:rest}, next:i+1};
+  if(kw==='RETURN') return {stmt:{type:'return',expr:rest}, next:i+1};
+  if(kw==='CALL'){
+    const cm = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$/);
+    if(cm) return {stmt:{type:'call', labelName:cm[1], argsExpr:cm[2]}, next:i+1};
+    return {stmt:{type:'nop'}, next:i+1};
+  }
+  if(kw==='PROCEDURE') return {stmt:{type:'nop'}, next:i+1}; // internal routines share the caller's variables (no EXPOSE scoping in this subset)
+  if(kw==='QUEUE') return {stmt:{type:'queue', expr:rest}, next:i+1};
+  if(kw==='PUSH') return {stmt:{type:'push', expr:rest}, next:i+1};
+  if(kw==='ARG') return {stmt:{type:'arg',names:rest.split(/\s+/).filter(Boolean)}, next:i+1};
+  if(kw==='PULL') return {stmt:{type:'pull',names:rest.split(/\s+/).filter(Boolean)}, next:i+1};
+  if(kw==='PARSE'){
+    const r2=rest.trim(); const kw2=r2.split(/\s+/)[0].toUpperCase();
+    if(kw2==='ARG') return {stmt:{type:'parsearg', template:this.tokenizeTemplate(r2.slice(3).trim())}, next:i+1};
+    if(kw2==='PULL') return {stmt:{type:'parsepull', template:this.tokenizeTemplate(r2.slice(4).trim())}, next:i+1};
+    if(kw2==='VALUE'){
+      const withIdx=r2.toUpperCase().indexOf(' WITH ');
+      const exprPart=r2.slice(6, withIdx>=0?withIdx:undefined).trim();
+      const templatePart= withIdx>=0? r2.slice(withIdx+6).trim():'';
+      return {stmt:{type:'parsevalue', expr:exprPart, template:this.tokenizeTemplate(templatePart)}, next:i+1};
+    }
+    return {stmt:{type:'nop'}, next:i+1};
+  }
+  if(kw==='LEAVE') return {stmt:{type:'leave'}, next:i+1};
+  if(kw==='ITERATE') return {stmt:{type:'iterate'}, next:i+1};
+  if(kw==='NOP') return {stmt:{type:'nop'}, next:i+1};
+  if(kw==='DO') return this.parseDo(lines,i,end,rest);
+  if(kw==='IF') return this.parseIf(lines,i,end,rest);
+  if(kw==='SELECT') return this.parseSelect(lines,i,end);
+  if(kw==='ADDRESS') return {stmt:{type:'address', env: rest.trim()}, next:i+1};
+  const am = clause.match(/^([A-Za-z_][A-Za-z0-9_.!?]*)\s*=\s*(.*)$/);
+  if(am) return {stmt:{type:'assign',name:am[1],expr:am[2]}, next:i+1};
+  // Any clause that's not a recognized keyword instruction or assignment is,
+  // per real REXX semantics, a command sent to the current ADDRESS environment.
+  return {stmt:{type:'hostcmd', expr: clause}, next:i+1};
+};
+Rexx.prototype.parseDo = function(lines,i,end,rest){
+  let doSpec; const r=rest.trim(); const rU=r.toUpperCase();
+  if(rU.startsWith('WHILE')) doSpec={kind:'while',cond:r.slice(5).trim()};
+  else if(rU==='FOREVER'||rU==='') doSpec={kind: r===''?'once':'forever'};
+  else{
+    const m=r.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s+TO\s+(.+?)(\s+BY\s+(.+))?$/i);
+    if(m) doSpec={kind:'range',varName:m[1],start:m[2],end:m[3],step:m[5]||'1'};
+    else doSpec={kind:'count',count:r};
+  }
+  const body=this.parseBlock(lines,i+1,end);
+  let next=body.next;
+  if(this.firstWord(lines[next]||'')==='END') next=next+1;
+  return {stmt:{type:'do',spec:doSpec,body:body.stmts}, next};
+};
+// Shared by IF...THEN/ELSE and SELECT's WHEN...THEN: `remainder` is
+// whatever text follows the keyword on the same line. Blank means the
+// body is the next clause; "DO ..." means a real multi-line DO block
+// starts right here (its body continues on subsequent lines, closed by
+// END, exactly like any other DO -- this is the common "THEN DO ... END"
+// idiom, which a naive single-line-only parse silently mangles); anything
+// else is a single inline statement.
+Rexx.prototype.parseInlineOrBlock = function(lines, i, end, remainder){
+  if(!remainder) return this.parseOne(lines, i+1, end);
+  const kw = remainder.split(/\s+/)[0].toUpperCase();
+  if(kw==='DO') return this.parseDo(lines, i, end, remainder.slice(2).trim());
+  if(kw==='IF'){
+    // Recurse with the REAL lines/end context (not a synthetic 1-line
+    // array) so a multi-line "ELSE IF ... THEN ... \n ELSE ..." chain can
+    // still look ahead past this line for a later real ELSE and attach it
+    // to this nested IF, instead of leaving it dangling -- which silently
+    // truncated parsing of everything after it (a real bug, found via testing).
+    return this.parseIf(lines, i, end, remainder.slice(2).trim());
+  }
+  const sub = this.parseOne([remainder], 0, 1);
+  return {stmt: sub.stmt, next: i+1};
+};
+Rexx.prototype.parseIf = function(lines,i,end,rest){
+  const thenIdx=rest.toUpperCase().indexOf(' THEN');
+  let cond,remainder;
+  if(thenIdx>=0){ cond=rest.slice(0,thenIdx).trim(); remainder=rest.slice(thenIdx+5).trim(); }
+  else{ cond=rest.trim(); remainder=''; }
+  const thenParsed = this.parseInlineOrBlock(lines, i, end, remainder);
+  const thenStmt = thenParsed.stmt; let next = thenParsed.next;
+  let elseStmt=null;
+  if(this.firstWord(lines[next]||'')==='ELSE'){
+    const elseClause=lines[next]; const elseRest=elseClause.slice(4).trim();
+    const elseParsed = this.parseInlineOrBlock(lines, next, end, elseRest);
+    elseStmt = elseParsed.stmt; next = elseParsed.next;
+  }
+  return {stmt:{type:'if',cond,then:thenStmt,else:elseStmt}, next};
+};
+Rexx.prototype.parseSelect = function(lines,i,end){
+  let i2=i+1; let whens=[]; let otherwise=[];
+  while(i2<end){
+    const kw=this.firstWord(lines[i2]);
+    if(kw==='END'){ i2++; break; }
+    if(kw==='WHEN'){
+      const rest=lines[i2].slice(4).trim();
+      const thenIdx=rest.toUpperCase().indexOf(' THEN');
+      const cond= thenIdx>=0? rest.slice(0,thenIdx).trim():rest;
+      const remainder= thenIdx>=0? rest.slice(thenIdx+5).trim():'';
+      const whenParsed = this.parseInlineOrBlock(lines, i2, end, remainder);
+      whens.push({cond, stmt: whenParsed.stmt}); i2 = whenParsed.next;
+    } else if(kw==='OTHERWISE'){
+      const p=this.parseBlock(lines,i2+1,end); otherwise=p.stmts; i2=p.next;
+    } else i2++;
+  }
+  return {stmt:{type:'select',whens,otherwise}, next:i2};
+};
+const LEAVE=Symbol('leave'), ITERATE=Symbol('iterate');
+Rexx.prototype.exec = function(stmts){
+  for(const st of stmts){ const sig=this.execOne(st); if(sig===LEAVE||sig===ITERATE) return sig; }
+  return null;
+};
+Rexx.prototype.execOne = function(st){
+  this.steps++;
+  if(this.steps>this.maxSteps) throw new Error('step limit exceeded (possible infinite loop)');
+  switch(st.type){
+    case 'nop': case 'unknown': return null;
+    case 'address': { this.address = (st.env||'').toUpperCase(); return null; }
+    case 'hostcmd': {
+      const text = this.evalToString(st.expr);
+      if(typeof this.hostCommandHandler === 'function'){
+        const res = this.hostCommandHandler(text, this.address, this) || {};
+        this.vars['RC'] = res.rc !== undefined ? res.rc : 0;
+        if(res.output) res.output.forEach(o=>this.print(o));
+        if(res.setVars) Object.keys(res.setVars).forEach(k=>{ this.vars[k.toUpperCase()] = res.setVars[k]; });
+      } else { this.vars['RC'] = 0; }
+      return null;
+    }
+    case 'say': this.print(this.evalToString(st.expr)); return null;
+    case 'assign': this.vars[this.resolveName(st.name)] = this.evalExpr(st.expr); return null;
+    case 'exit': {
+      const v = st.expr? this.evalExpr(st.expr):'';
+      if(typeof v==='number' && Number.isFinite(v)) this.rc = v;
+      const e=new Error('exit'); e.__rexxExit=true; throw e;
+    }
+    case 'label': return null; // just a landing point for CALL; falls through otherwise
+    case 'return': {
+      const v = st.expr? this.evalExpr(st.expr):'';
+      const e=new Error('return'); e.__rexxReturn=true; e.value=v; throw e;
+    }
+    case 'call': {
+      const labelU = st.labelName.toUpperCase();
+      const idx = this.labels[labelU];
+      if(idx===undefined) throw new Error('label not found for CALL: ' + st.labelName);
+      const argVal = st.argsExpr ? this.evalToString(st.argsExpr) : '';
+      const savedArgString = this.argString;
+      this.argString = argVal;
+      let returnValue = '';
+      try{
+        const {stmts} = this.parseBlock(this.flatLines, idx+1, this.flatLines.length);
+        this.exec(stmts);
+      }catch(e){
+        if(e && e.__rexxReturn){ returnValue = e.value!==undefined? e.value : ''; }
+        else { this.argString = savedArgString; throw e; }
+      }
+      this.argString = savedArgString;
+      this.vars['RESULT'] = returnValue;
+      return null;
+    }
+    case 'queue': this.inputQueue.push(this.evalToString(st.expr)); return null; // adds to the bottom
+    case 'push': this.inputQueue.unshift(this.evalToString(st.expr)); return null; // adds to the top
+    case 'arg': {
+      const parts = this.argString.trim().length? this.argString.trim().split(/\s+/):[];
+      st.names.forEach((nm,idx)=>{ this.vars[nm.toUpperCase()] = parts[idx]!==undefined? parts[idx]:''; });
+      return null;
+    }
+    case 'pull': {
+      st.names.forEach((nm)=>{ const v=this.inputQueue.length? this.inputQueue.shift():''; this.vars[nm.toUpperCase()]=String(v).toUpperCase(); });
+      return null;
+    }
+    case 'parsevalue': {
+      const val = this.evalToString(st.expr);
+      this.applyTemplate(val, st.template);
+      return null;
+    }
+    case 'parsearg': {
+      // PARSE ARG preserves case (unlike plain PULL, which uppercases)
+      this.applyTemplate(this.argString, st.template);
+      return null;
+    }
+    case 'parsepull': {
+      const v = this.inputQueue.length? String(this.inputQueue.shift()) : '';
+      this.applyTemplate(v.toUpperCase(), st.template); // PULL-family uppercases input
+      return null;
+    }
+    case 'if': {
+      if(this.truthy(this.evalExpr(st.cond))) return this.execOne(st.then);
+      else if(st.else) return this.execOne(st.else);
+      return null;
+    }
+    case 'select': {
+      for(const w of st.whens){ if(this.truthy(this.evalExpr(w.cond))) return this.execOne(w.stmt); }
+      return this.exec(st.otherwise);
+    }
+    case 'do': return this.execDo(st);
+    case 'leave': return LEAVE;
+    case 'iterate': return ITERATE;
+    default: return null;
+  }
+};
+Rexx.prototype.execDo = function(st){
+  const spec=st.spec;
+  if(spec.kind==='once'){ this.exec(st.body); return null; }
+  if(spec.kind==='range'){
+    let cur=this.toNumber(this.evalExpr(spec.start));
+    const endV=this.toNumber(this.evalExpr(spec.end));
+    const step=this.toNumber(this.evalExpr(spec.step));
+    while((step>=0 && cur<=endV) || (step<0 && cur>=endV)){
+      this.vars[spec.varName.toUpperCase()]=cur;
+      const sig=this.exec(st.body);
+      if(sig===LEAVE) break;
+      cur+=step;
+    }
+    return null;
+  }
+  if(spec.kind==='count'){
+    let n=this.toNumber(this.evalExpr(spec.count));
+    for(let k=0;k<n;k++){ const sig=this.exec(st.body); if(sig===LEAVE) break; }
+    return null;
+  }
+  if(spec.kind==='while'){
+    let guard=0;
+    while(this.truthy(this.evalExpr(spec.cond))){
+      if(++guard>this.maxSteps) throw new Error('loop guard exceeded');
+      const sig=this.exec(st.body); if(sig===LEAVE) break;
+    }
+    return null;
+  }
+  if(spec.kind==='forever'){
+    let guard=0;
+    while(true){
+      if(++guard>this.maxSteps) throw new Error('loop guard exceeded');
+      const sig=this.exec(st.body); if(sig===LEAVE) break;
+    }
+    return null;
+  }
+  return null;
+};
+Rexx.prototype.evalToString = function(expr){ return this.toStr(this.evalExpr(expr)); };
+Rexx.prototype.toStr = function(v){
+  if(v===undefined||v===null) return '';
+  if(typeof v==='number'){ if(Number.isInteger(v)) return String(v); let s=String(Math.round(v*1e6)/1e6); return s; }
+  return String(v);
+};
+Rexx.prototype.toNumber = function(v){ if(typeof v==='number') return v; const n=parseFloat(v); return isNaN(n)?0:n; };
+Rexx.prototype.truthy = function(v){ const s=this.toStr(v).trim(); return s==='1' || s.toUpperCase()==='TRUE'; };
+Rexx.prototype.resolveName = function(name){
+  if(name.indexOf('.')===-1) return name.toUpperCase();
+  const parts=name.split('.'); const stem=parts[0].toUpperCase();
+  const tail=parts.slice(1).map(seg=>{
+    if(/^[A-Za-z_][A-Za-z0-9_]*$/.test(seg)) return this.toStr(this.lookupSimple(seg));
+    return seg;
+  });
+  return stem + '.' + tail.join('.');
+};
+Rexx.prototype.lookupSimple = function(name){ const N=name.toUpperCase(); if(Object.prototype.hasOwnProperty.call(this.vars,N)) return this.vars[N]; return name; };
+Rexx.prototype.lookupVar = function(name){
+  const resolved=this.resolveName(name);
+  if(Object.prototype.hasOwnProperty.call(this.vars,resolved)) return this.vars[resolved];
+  return resolved;
+};
+Rexx.prototype.evalExpr = function(expr){ const toks=this.tokenizeExpr(expr); const p={toks,pos:0}; return this.parseOr(p); };
+Rexx.prototype.tokenizeExpr = function(str){
+  let toks=[]; let i=0; const n=str.length;
+  while(i<n){
+    const c=str[i];
+    if(/\s/.test(c)){ i++; continue; }
+    if(c==='"'||c==="'"){
+      const q=c; let j=i+1; let val='';
+      while(j<n){ if(str[j]===q){ if(str[j+1]===q){ val+=q; j+=2; continue;} break;} val+=str[j]; j++; }
+      toks.push({t:'str',v:val}); i=j+1; continue;
+    }
+    if(str.startsWith('||',i)){ toks.push({t:'op',v:'||'}); i+=2; continue; }
+    if(str.startsWith('==',i)){ toks.push({t:'op',v:'=='}); i+=2; continue; }
+    if(str.startsWith('\\==',i)){ toks.push({t:'op',v:'\\=='}); i+=3; continue; }
+    if(str.startsWith('\\=',i)){ toks.push({t:'op',v:'\\='}); i+=2; continue; }
+    if(str.startsWith('<>',i)){ toks.push({t:'op',v:'\\='}); i+=2; continue; }
+    if(str.startsWith('>=',i)){ toks.push({t:'op',v:'>='}); i+=2; continue; }
+    if(str.startsWith('<=',i)){ toks.push({t:'op',v:'<='}); i+=2; continue; }
+    if(str.startsWith('**',i)){ toks.push({t:'op',v:'**'}); i+=2; continue; }
+    if(str.startsWith('//',i)){ toks.push({t:'op',v:'//'}); i+=2; continue; }
+    if('+-*/=()<>&|,\\'.includes(c)){ toks.push({t:'op',v:c}); i++; continue; }
+    if(/[0-9.]/.test(c)){ let j=i; while(j<n && /[0-9.]/.test(str[j])) j++; toks.push({t:'num',v:parseFloat(str.slice(i,j))}); i=j; continue; }
+    let j=i; while(j<n && /[A-Za-z0-9_.!?]/.test(str[j])) j++;
+    if(j===i){ i++; continue; }
+    const word=str.slice(i,j);
+    if(str[j]==='(') toks.push({t:'func',v:word}); else toks.push({t:'id',v:word});
+    i=j;
+  }
+  return toks;
+};
+Rexx.prototype.peek=function(p){return p.toks[p.pos];};
+Rexx.prototype.next=function(p){return p.toks[p.pos++];};
+Rexx.prototype.parseOr = function(p){
+  let left=this.parseCompare(p);
+  while(this.peek(p) && this.peek(p).t==='op' && (this.peek(p).v==='&'||this.peek(p).v==='|')){
+    const op=this.next(p).v; const right=this.parseCompare(p);
+    const l=this.truthy(left), r=this.truthy(right);
+    left = (op==='&')? ((l&&r)?1:0) : ((l||r)?1:0);
+  }
+  return left;
+};
+Rexx.prototype.parseCompare = function(p){
+  let left=this.parseConcat(p);
+  while(this.peek(p) && this.peek(p).t==='op' && ['=','\\=','==','\\==','>','<','>=','<='].includes(this.peek(p).v)){
+    const op=this.next(p).v; const right=this.parseConcat(p);
+    left=this.compare(left,right,op);
+  }
+  return left;
+};
+Rexx.prototype.compare = function(a,b,op){
+  const an=this.toNumber(a), bn=this.toNumber(b);
+  const as=this.toStr(a), bs=this.toStr(b);
+  const bothNumeric = !isNaN(parseFloat(as)) && !isNaN(parseFloat(bs)) && as.trim()!=='' && bs.trim()!=='';
+  let res;
+  switch(op){
+    case '=': case '==': res= bothNumeric? (an===bn):(as===bs); break;
+    case '\\=': case '\\==': res= bothNumeric? (an!==bn):(as!==bs); break;
+    case '>': res= bothNumeric? (an>bn):(as>bs); break;
+    case '<': res= bothNumeric? (an<bn):(as<bs); break;
+    case '>=': res= bothNumeric? (an>=bn):(as>=bs); break;
+    case '<=': res= bothNumeric? (an<=bn):(as<=bs); break;
+  }
+  return res?1:0;
+};
+Rexx.prototype.parseConcat = function(p){
+  let left=this.parseAdd(p);
+  while(this.peek(p)){
+    const t=this.peek(p);
+    if(t.t==='op' && t.v==='||'){ this.next(p); const right=this.parseAdd(p); left=this.toStr(left)+this.toStr(right); }
+    else if(t.t==='str'||t.t==='num'||t.t==='id'||t.t==='func'){ const right=this.parseAdd(p); left=this.toStr(left)+' '+this.toStr(right); }
+    else break;
+  }
+  return left;
+};
+Rexx.prototype.parseAdd = function(p){
+  let left=this.parseMul(p);
+  while(this.peek(p) && this.peek(p).t==='op' && (this.peek(p).v==='+'||this.peek(p).v==='-')){
+    const op=this.next(p).v; const right=this.parseMul(p);
+    left= op==='+'? this.toNumber(left)+this.toNumber(right) : this.toNumber(left)-this.toNumber(right);
+  }
+  return left;
+};
+Rexx.prototype.parseMul = function(p){
+  let left=this.parsePow(p);
+  while(this.peek(p) && this.peek(p).t==='op' && (this.peek(p).v==='*'||this.peek(p).v==='/'||this.peek(p).v==='//')){
+    const op=this.next(p).v; const right=this.parsePow(p); const rn=this.toNumber(right);
+    if(op==='*') left=this.toNumber(left)*rn;
+    else if(op==='/') left= rn===0? NaN : this.toNumber(left)/rn;
+    else left= rn===0? NaN : this.toNumber(left)%rn;
+  }
+  return left;
+};
+Rexx.prototype.parsePow = function(p){
+  let left=this.parseUnary(p);
+  while(this.peek(p) && this.peek(p).t==='op' && this.peek(p).v==='**'){
+    this.next(p); const right=this.parseUnary(p); left=Math.pow(this.toNumber(left), this.toNumber(right));
+  }
+  return left;
+};
+Rexx.prototype.parseUnary = function(p){
+  const t=this.peek(p);
+  if(t && t.t==='op' && (t.v==='-'||t.v==='+')){ this.next(p); const v=this.parseUnary(p); return t.v==='-'? -this.toNumber(v): this.toNumber(v); }
+  if(t && t.t==='op' && t.v==='\\'){ this.next(p); const v=this.parseUnary(p); return this.truthy(v)?0:1; }
+  return this.parsePrimary(p);
+};
+Rexx.prototype.parsePrimary = function(p){
+  const t=this.next(p);
+  if(!t) return '';
+  if(t.t==='num') return t.v;
+  if(t.t==='str') return t.v;
+  if(t.t==='op' && t.v==='('){ const v=this.parseOr(p); if(this.peek(p) && this.peek(p).v===')') this.next(p); return v; }
+  if(t.t==='func'){
+    this.next(p);
+    let args=[];
+    if(this.peek(p) && !(this.peek(p).t==='op' && this.peek(p).v===')')){
+      args.push(this.parseOr(p));
+      while(this.peek(p) && this.peek(p).t==='op' && this.peek(p).v===','){ this.next(p); args.push(this.parseOr(p)); }
+    }
+    if(this.peek(p) && this.peek(p).v===')') this.next(p);
+    return this.callFunc(t.v,args);
+  }
+  if(t.t==='id') return this.lookupVar(t.v);
+  return '';
+};
+Rexx.prototype.callFunc = function(name,args){
+  const N=name.toUpperCase();
+  const s=(i)=>this.toStr(args[i]); const n=(i)=>this.toNumber(args[i]);
+  switch(N){
+    case 'LENGTH': return s(0).length;
+    case 'SUBSTR': { const str=s(0); const start=Math.max(1,Math.round(n(1))); const len= args[2]!==undefined? Math.round(n(2)): str.length-start+1; return str.substr(start-1, Math.max(0,len)); }
+    case 'POS': { const needle=s(0); const haystack=s(1); const start= args[2]!==undefined? Math.max(1,Math.round(n(2))):1; return needle? (haystack.indexOf(needle, start-1)+1):0; }
+    case 'STRIP': { let str=s(0); const opt= args[1]!==undefined? s(1).toUpperCase():'B'; if(opt.startsWith('L')) return str.replace(/^\s+/,''); if(opt.startsWith('T')) return str.replace(/\s+$/,''); return str.trim(); }
+    case 'UPPER': return s(0).toUpperCase();
+    case 'LOWER': return s(0).toLowerCase();
+    case 'REVERSE': return s(0).split('').reverse().join('');
+    case 'WORD': { const w=s(0).trim().split(/\s+/).filter(Boolean); return w[Math.round(n(1))-1]||''; }
+    case 'WORDS': return s(0).trim()? s(0).trim().split(/\s+/).filter(Boolean).length:0;
+    case 'ABS': return Math.abs(n(0));
+    case 'MAX': return Math.max(...args.map((_,i)=>n(i)));
+    case 'MIN': return Math.min(...args.map((_,i)=>n(i)));
+    case 'TRUNC': { const d= args[1]!==undefined? Math.round(n(1)):0; const f=Math.pow(10,d); return Math.trunc(n(0)*f)/f; }
+    case 'RANDOM': { const lo= args[0]!==undefined? Math.round(n(0)):0; const hi= args[1]!==undefined? Math.round(n(1)):999; return lo+Math.floor(Math.random()*(hi-lo+1)); }
+    case 'DATE': {
+      const now = new Date();
+      const yyyy = now.getFullYear(), mm = now.getMonth()+1, dd = now.getDate();
+      if(args.length === 0) return yyyy + '-' + String(mm).padStart(2,'0') + '-' + String(dd).padStart(2,'0');
+      const opt = s(0).toUpperCase().charAt(0);
+      const dayOfYear = Math.floor((Date.UTC(yyyy,mm-1,dd) - Date.UTC(yyyy,0,1))/86400000) + 1;
+      const wdays = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const mons = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      switch(opt){
+        case 'J': return String(yyyy).slice(-2) + String(dayOfYear).padStart(3,'0'); // classic yyddd Julian date
+        case 'S': return String(yyyy) + String(mm).padStart(2,'0') + String(dd).padStart(2,'0'); // yyyymmdd
+        case 'U': return String(mm).padStart(2,'0') + '/' + String(dd).padStart(2,'0') + '/' + String(yyyy).slice(-2);
+        case 'E': return String(dd).padStart(2,'0') + '/' + String(mm).padStart(2,'0') + '/' + String(yyyy).slice(-2);
+        case 'O': return String(yyyy).slice(-2) + '/' + String(mm).padStart(2,'0') + '/' + String(dd).padStart(2,'0');
+        case 'D': return String(dayOfYear);
+        case 'W': return wdays[now.getDay()];
+        case 'N': return dd + ' ' + mons[mm-1] + ' ' + yyyy;
+        default: return yyyy + '-' + String(mm).padStart(2,'0') + '-' + String(dd).padStart(2,'0');
+      }
+    }
+    case 'TIME': return new Date().toTimeString().slice(0,8);
+    case 'DATATYPE': { const v=s(0); return (v.trim()!=='' && !isNaN(parseFloat(v)) && isFinite(v))?'NUM':'CHAR'; }
+    case 'C2X': return Array.from(s(0)).map(ch=>ch.charCodeAt(0).toString(16).toUpperCase().padStart(2,'0')).join('');
+    case 'X2C': { const hex=s(0).replace(/\s+/g,''); let out=''; for(let i=0;i<hex.length;i+=2) out+=String.fromCharCode(parseInt(hex.substr(i,2),16)); return out; }
+    case 'COPIES': return s(0).repeat(Math.max(0,Math.round(n(1))));
+    case 'LEFT': { const str=s(0); const len=Math.round(n(1)); const pad= args[2]!==undefined? s(2):' '; return (str+pad.repeat(len)).substr(0,len); }
+    case 'RIGHT': { const str=s(0); const len=Math.round(n(1)); const pad= args[2]!==undefined? s(2):' '; return (pad.repeat(len)+str).slice(-len); }
+    case 'TRANSLATE': return args[1]!==undefined? s(0).split('').map(ch=>{ const idx=s(2).indexOf(ch); return idx>=0? (s(1)[idx]||''):ch; }).join(''): s(0).toUpperCase();
+    case 'SIGN': return Math.sign(n(0));
+    case 'DELSTR': { const str=s(0); const start=Math.max(1,Math.round(n(1))); const len= args[2]!==undefined? Math.round(n(2)): str.length-start+1; return str.slice(0,start-1) + str.slice(start-1+Math.max(0,len)); }
+    case 'INSERT': { const news=s(0); const target=s(1); const pos= args[2]!==undefined? Math.max(0,Math.round(n(2))):0; const padded = target.length<pos? target+' '.repeat(pos-target.length) : target; return padded.slice(0,pos) + news + padded.slice(pos); }
+    case 'OVERLAY': { const news=s(0); const target=s(1); const pos= args[2]!==undefined? Math.max(1,Math.round(n(2))):1; const pad= args[4]!==undefined? s(4):' '; const padded = target.length<pos-1? target+pad.repeat(pos-1-target.length) : target; return padded.slice(0,pos-1) + news + padded.slice(pos-1+news.length); }
+    case 'CENTER': case 'CENTRE': { const str=s(0); const len=Math.round(n(1)); const pad= args[2]!==undefined? s(2):' '; if(str.length>=len) { const extra=str.length-len; const left=Math.floor(extra/2); return str.slice(left,left+len); } const total=len-str.length; const left=Math.floor(total/2); const right=total-left; return pad.repeat(left)+str+pad.repeat(right); }
+    case 'SPACE': { const words=s(0).trim().split(/\s+/).filter(Boolean); const n1= args[1]!==undefined? Math.max(0,Math.round(n(1))):1; const pad= args[2]!==undefined? s(2):' '; return words.join(pad.repeat(n1)); }
+    case 'VERIFY': { const str=s(0); const ref=s(1); const opt= args[2]!==undefined? s(2).toUpperCase():'NOMATCH'; const start= args[3]!==undefined? Math.max(1,Math.round(n(3))):1; for(let i=start-1;i<str.length;i++){ const inRef = ref.indexOf(str[i])>=0; const hit = opt.startsWith('M')? inRef : !inRef; if(hit) return i+1; } return 0; }
+    case 'D2C': { const num=Math.trunc(n(0)); let hex = (num<0? (num>>>0) : num).toString(16); if(hex.length%2) hex='0'+hex; let out=''; for(let i=0;i<hex.length;i+=2) out+=String.fromCharCode(parseInt(hex.substr(i,2),16)); if(args[1]!==undefined){ const len=Math.round(n(1)); return out.length>len? out.slice(-len) : '\0'.repeat(Math.max(0,len-out.length))+out; } return out; }
+    case 'D2X': { const num=Math.trunc(n(0)); let hex = (num<0? (num>>>0) : num).toString(16).toUpperCase(); if(args[1]!==undefined){ const len=Math.round(n(1)); return hex.length>len? hex.slice(-len) : hex.padStart(len,'0'); } return hex; }
+    case 'C2D': { const str = args[1]!==undefined? s(0).slice(0,Math.round(n(1))) : s(0); if(!str) return 0; let val=0; for(let i=0;i<str.length;i++) val = val*256 + str.charCodeAt(i); const bits=str.length*8; if(bits>0 && val >= Math.pow(2,bits-1)) val -= Math.pow(2,bits); return val; }
+    case 'X2D': { const hex=s(0).replace(/\s+/g,''); if(!hex) return 0; let val=parseInt(hex,16); const bits=hex.length*4; if(bits>0 && val >= Math.pow(2,bits-1)) val -= Math.pow(2,bits); return val; }
+    case 'BITAND': { const a=s(0), b= args[1]!==undefined? s(1):''; const len=Math.max(a.length,b.length); let out=''; for(let i=0;i<len;i++){ const ca=(i<a.length? a.charCodeAt(i):0xFF); const cb=(i<b.length? b.charCodeAt(i):0xFF); out+=String.fromCharCode(ca & cb); } return out; }
+    case 'BITOR': { const a=s(0), b= args[1]!==undefined? s(1):''; const len=Math.max(a.length,b.length); let out=''; for(let i=0;i<len;i++){ const ca=(i<a.length? a.charCodeAt(i):0); const cb=(i<b.length? b.charCodeAt(i):0); out+=String.fromCharCode(ca | cb); } return out; }
+    case 'BITXOR': { const a=s(0), b= args[1]!==undefined? s(1):''; const len=Math.max(a.length,b.length); let out=''; for(let i=0;i<len;i++){ const ca=(i<a.length? a.charCodeAt(i):0); const cb=(i<b.length? b.charCodeAt(i):0); out+=String.fromCharCode(ca ^ cb); } return out; }
+    case 'SYMBOL': { const nm=s(0).toUpperCase(); return Object.prototype.hasOwnProperty.call(this.vars,nm)? 'VAR' : 'LIT'; }
+    case 'VALUE': { const nm=s(0).toUpperCase(); if(args[1]!==undefined){ const old=this.vars[nm]; this.vars[nm]=args[1]; return old!==undefined? old:''; } return this.vars[nm]!==undefined? this.vars[nm] : ''; }
+    case 'QUEUED': return this.inputQueue.length;
+    default: return '';
+  }
+};
+
+// =====================================================================
+// ------------------------------- DB2 ENGINE ----------------------------
+// Minimal in-memory SQL engine simulating a DB2 subsystem: CREATE/DROP
+// TABLE, INSERT, SELECT (WHERE + ORDER BY, AND-chained comparisons),
+// UPDATE, DELETE. Returns {sqlcode, message, rows, columns, rowsAffected}
+// using real-ish DB2 SQLCODEs (0 ok, 100 not found, -204 undefined name,
+// -601 already exists, -811 singleton-select multi-row, etc).
+// =====================================================================
+function DB2Engine(tables){ this.tables = tables || {}; }
+DB2Engine.prototype.splitTopLevel = function(str, sep){
+  let out=[], cur='', depth=0, q=null;
+  for(let i=0;i<str.length;i++){
+    const c=str[i];
+    if(q){ cur+=c; if(c===q) q=null; continue; }
+    if(c==="'"||c==='"'){ q=c; cur+=c; continue; }
+    if(c==='(') depth++;
+    if(c===')') depth--;
+    if(c===sep && depth===0){ out.push(cur); cur=''; }
+    else cur+=c;
+  }
+  out.push(cur);
+  return out.map(s=>s.trim()).filter(s=>s.length);
+};
+DB2Engine.prototype.parseValue = function(raw){
+  let v=raw.trim();
+  if(/^'.*'$/.test(v)) return v.slice(1,-1).replace(/''/g,"'");
+  if(/^-?\d+(\.\d+)?$/.test(v)) return parseFloat(v);
+  if(v.toUpperCase()==='NULL') return null;
+  return v;
+};
+// UPDATE's SET col=expr accepts a literal, a bare column reference, or a
+// simple "COLUMN (+|-|*|/) NUMBER" arithmetic expression evaluated against
+// the row being updated (e.g. SET SALARY = SALARY + 1000).
+DB2Engine.prototype.evalSqlExpr = function(row, exprText){
+  const text = exprText.trim();
+  const m = text.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*([+\-*/])\s*(-?\d+(\.\d+)?)$/);
+  if(m){
+    const cell = Number(row[m[1].toUpperCase()]);
+    const rhs = Number(m[3]);
+    switch(m[2]){
+      case '+': return cell+rhs;
+      case '-': return cell-rhs;
+      case '*': return cell*rhs;
+      case '/': return rhs!==0 ? cell/rhs : null;
+    }
+  }
+  if(/^[A-Za-z_][A-Za-z0-9_]*$/.test(text) && row[text.toUpperCase()]!==undefined) return row[text.toUpperCase()];
+  return this.parseValue(text);
+};
+// WHERE evaluator: OR-of-AND-groups, atoms support =/<>/>/</>=/<=, LIKE
+// ('%'/'_' wildcards), IN(...), BETWEEN..AND.., IS [NOT] NULL, and either
+// side of a comparison can be a literal or another column (for JOIN ON
+// clauses like T1.COL = T2.COL).
+DB2Engine.prototype.evalCond = function(row, condStr){
+  if(!condStr || !condStr.trim()) return true;
+  // BETWEEN's own "x AND y" isn't a logical AND -- shield it with a
+  // placeholder before the top-level AND/OR split below, then restore it
+  // so evalAtom's own BETWEEN pattern can still match "...AND...".
+  var BETWEEN_AND_TOKEN = "BETWEENANDTOKEN";
+  var protectedStr = condStr.replace(/\bBETWEEN\b(.+?)\bAND\b/gi, function(whole, mid){ return "BETWEEN" + mid + BETWEEN_AND_TOKEN; });
+  var orGroups = this.splitTopLevelKeyword(protectedStr, "OR");
+  var self = this;
+  return orGroups.some(function(group){
+    var andParts = self.splitTopLevelKeyword(group, "AND");
+    return andParts.every(function(p){ return self.evalAtom(row, p.trim().split(BETWEEN_AND_TOKEN).join("AND")); });
+  });
+};
+DB2Engine.prototype.splitTopLevelKeyword = function(str, keyword){
+  const kwRe = new RegExp('^\\s+' + keyword + '\\s+', 'i');
+  let out=[], cur='', depth=0, q=null, i=0;
+  while(i<str.length){
+    const c=str[i];
+    if(q){ cur+=c; if(c===q) q=null; i++; continue; }
+    if(c==="'"||c==='"'){ q=c; cur+=c; i++; continue; }
+    if(c==='(') depth++;
+    if(c===')') depth--;
+    if(depth===0){
+      const m = str.slice(i).match(kwRe);
+      if(m){ out.push(cur); cur=''; i+=m[0].length; continue; }
+    }
+    cur+=c; i++;
+  }
+  out.push(cur);
+  return out;
+};
+DB2Engine.prototype.balanced = function(s){ let d=0; for(const c of s){ if(c==='(') d++; if(c===')') d--; if(d<0) return false; } return d===0; };
+DB2Engine.prototype.compareVals = function(cell, val, op){
+  const bothNum = typeof cell==='number' && typeof val==='number';
+  switch(op){
+    case '=': return bothNum? cell===val : String(cell)===String(val);
+    case '<>': case '!=': return bothNum? cell!==val : String(cell)!==String(val);
+    case '>': return bothNum? cell>val : String(cell)>String(val);
+    case '<': return bothNum? cell<val : String(cell)<String(val);
+    case '>=': return bothNum? cell>=val : String(cell)>=String(val);
+    case '<=': return bothNum? cell<=val : String(cell)<=String(val);
+  }
+  return false;
+};
+DB2Engine.prototype.likeMatch = function(str, pattern){
+  const esc = pattern.replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/%/g,'.*').replace(/_/g,'.');
+  return new RegExp('^' + esc + '$', 'i').test(String(str));
+};
+DB2Engine.prototype.evalAtom = function(row, atomStr){
+  let p = atomStr.trim();
+  const wrapM = p.match(/^\((.*)\)$/);
+  if(wrapM && this.balanced(wrapM[1])) p = wrapM[1].trim();
+  const COL = '[A-Za-z_][A-Za-z0-9_.]*';
+  let m;
+  m = p.match(new RegExp('^(' + COL + ')\\s+NOT\\s+LIKE\\s+\'(.*)\'$', 'i'));
+  if(m) return !this.likeMatch(row[m[1].toUpperCase()], m[2]);
+  m = p.match(new RegExp('^(' + COL + ')\\s+LIKE\\s+\'(.*)\'$', 'i'));
+  if(m) return this.likeMatch(row[m[1].toUpperCase()], m[2]);
+  m = p.match(new RegExp('^(' + COL + ')\\s+NOT\\s+IN\\s*\\(([^)]*)\\)$', 'i'));
+  if(m){ const vals=this.splitTopLevel(m[2],',').map(v=>this.parseValue(v)); return !vals.some(v=>this.compareVals(row[m[1].toUpperCase()],v,'=')); }
+  m = p.match(new RegExp('^(' + COL + ')\\s+IN\\s*\\(([^)]*)\\)$', 'i'));
+  if(m){ const vals=this.splitTopLevel(m[2],',').map(v=>this.parseValue(v)); return vals.some(v=>this.compareVals(row[m[1].toUpperCase()],v,'=')); }
+  m = p.match(new RegExp('^(' + COL + ')\\s+NOT\\s+BETWEEN\\s+(.+?)\\s+AND\\s+(.+)$', 'i'));
+  if(m){ const cell=row[m[1].toUpperCase()]; const lo=this.parseValue(m[2]); const hi=this.parseValue(m[3]); return !(cell>=lo && cell<=hi); }
+  m = p.match(new RegExp('^(' + COL + ')\\s+BETWEEN\\s+(.+?)\\s+AND\\s+(.+)$', 'i'));
+  if(m){ const cell=row[m[1].toUpperCase()]; const lo=this.parseValue(m[2]); const hi=this.parseValue(m[3]); return cell>=lo && cell<=hi; }
+  m = p.match(new RegExp('^(' + COL + ')\\s+IS\\s+NOT\\s+NULL$', 'i'));
+  if(m) return row[m[1].toUpperCase()]!==null && row[m[1].toUpperCase()]!==undefined;
+  m = p.match(new RegExp('^(' + COL + ')\\s+IS\\s+NULL$', 'i'));
+  if(m) return row[m[1].toUpperCase()]===null || row[m[1].toUpperCase()]===undefined;
+  m = p.match(new RegExp('^(' + COL + ')\\s*(=|<>|!=|>=|<=|>|<)\\s*(.+)$'));
+  if(m){
+    const col=m[1], op=m[2], rhsRaw=m[3].trim();
+    const rhsIsColumnRef = new RegExp('^' + COL + '$').test(rhsRaw) && !/^-?\d+(\.\d+)?$/.test(rhsRaw) && row[rhsRaw.toUpperCase()]!==undefined;
+    const val = rhsIsColumnRef ? row[rhsRaw.toUpperCase()] : this.parseValue(rhsRaw);
+    return this.compareVals(row[col.toUpperCase()], val, op);
+  }
+  return false;
+};
+// FROM clause: a single table, or "T1 [alias] [INNER] JOIN T2 [alias] ON cond"
+// (one join level -- a deliberate subset, not full chained multi-way joins).
+// Rows come back "qualified": each column is reachable both unqualified
+// (COL) and table/alias-qualified (ALIAS.COL, TABLE.COL) for JOIN ON and SELECT.
+DB2Engine.prototype.qualifyRow = function(parts){
+  const row = {};
+  parts.forEach(p=>{
+    p.columns.forEach(c=>{
+      row[c.name] = p.row[c.name];
+      row[p.alias+'.'+c.name] = p.row[c.name];
+      if(p.name!==p.alias) row[p.name+'.'+c.name] = p.row[c.name];
+    });
+  });
+  return row;
+};
+DB2Engine.prototype.evalFrom = function(fromClause){
+  const joinM = fromClause.match(/^(.*?)\b(?:INNER\s+JOIN|JOIN)\b(.*?)\bON\b(.*)$/is);
+  if(!joinM){
+    const baseM = fromClause.trim().match(/^([A-Za-z_][A-Za-z0-9_.]*)\s*([A-Za-z_][A-Za-z0-9_]*)?$/);
+    if(!baseM){ this._lastFromError='SYNTAX ERROR IN FROM CLAUSE'; return {baseRows:null}; }
+    const tblName=baseM[1].toUpperCase(); const alias=(baseM[2]||tblName).toUpperCase();
+    const tbl=this.tables[tblName];
+    if(!tbl){ this._lastFromError=tblName+' IS AN UNDEFINED NAME'; return {baseRows:null}; }
+    const rows = tbl.rows.map(r=>this.qualifyRow([{alias, name:tblName, columns:tbl.columns, row:r}]));
+    return {baseRows: rows, tableColumnsMap: tbl.columns.map(c=>c.name)};
+  }
+  const leftSpec=joinM[1].trim(), rightSpec=joinM[2].trim(), onCond=joinM[3].trim();
+  const leftM = leftSpec.match(/^([A-Za-z_][A-Za-z0-9_.]*)\s*([A-Za-z_][A-Za-z0-9_]*)?$/);
+  const rightM = rightSpec.match(/^([A-Za-z_][A-Za-z0-9_.]*)\s*([A-Za-z_][A-Za-z0-9_]*)?$/);
+  if(!leftM || !rightM){ this._lastFromError='SYNTAX ERROR IN JOIN'; return {baseRows:null}; }
+  const leftName=leftM[1].toUpperCase(), leftAlias=(leftM[2]||leftName).toUpperCase();
+  const rightName=rightM[1].toUpperCase(), rightAlias=(rightM[2]||rightName).toUpperCase();
+  const leftTbl=this.tables[leftName], rightTbl=this.tables[rightName];
+  if(!leftTbl){ this._lastFromError=leftName+' IS AN UNDEFINED NAME'; return {baseRows:null}; }
+  if(!rightTbl){ this._lastFromError=rightName+' IS AN UNDEFINED NAME'; return {baseRows:null}; }
+  const rows=[];
+  leftTbl.rows.forEach(lr=>{
+    rightTbl.rows.forEach(rr=>{
+      const candidate = this.qualifyRow([
+        {alias:leftAlias, name:leftName, columns:leftTbl.columns, row:lr},
+        {alias:rightAlias, name:rightName, columns:rightTbl.columns, row:rr},
+      ]);
+      if(this.evalCond(candidate, onCond)) rows.push(candidate);
+    });
+  });
+  const flatColumns=[]; leftTbl.columns.concat(rightTbl.columns).forEach(c=>{ if(!flatColumns.includes(c.name)) flatColumns.push(c.name); });
+  return {baseRows: rows, tableColumnsMap: flatColumns};
+};
+DB2Engine.prototype.parseColSpec = function(colText){
+  let text = colText.trim(); let alias = null;
+  const aliasM = text.match(/^(.*?)\s+AS\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/i);
+  if(aliasM){ text = aliasM[1].trim(); alias = aliasM[2].toUpperCase(); }
+  const aggM = text.match(/^(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(.*?)\s*\)$/i);
+  if(aggM){
+    const agg = aggM[1].toUpperCase();
+    const inner = aggM[2].trim();
+    const col = inner==='*' ? null : inner.replace(/^[A-Za-z_][A-Za-z0-9_]*\./,'').toUpperCase();
+    return {agg, col, alias};
+  }
+  const col = text.replace(/^[A-Za-z_][A-Za-z0-9_]*\./,'').toUpperCase();
+  return {col, alias};
+};
+DB2Engine.prototype.computeAgg = function(agg, col, rows){
+  if(agg==='COUNT') return col? rows.filter(r=>r[col]!==undefined && r[col]!==null).length : rows.length;
+  const nums = rows.map(r=>Number(r[col])).filter(v=>!isNaN(v));
+  if(agg==='SUM') return nums.reduce((a,b)=>a+b,0);
+  if(agg==='AVG') return nums.length? nums.reduce((a,b)=>a+b,0)/nums.length : null;
+  if(agg==='MIN') return nums.length? Math.min(...nums) : null;
+  if(agg==='MAX') return nums.length? Math.max(...nums) : null;
+  return null;
+};
+DB2Engine.prototype.execSelect = function(sql){
+  let rest = sql.slice(6).trim(); // after "SELECT"
+  let distinct = false;
+  if(/^DISTINCT\s+/i.test(rest)){ distinct = true; rest = rest.replace(/^DISTINCT\s+/i,''); }
+
+  let orderClause=null, groupClause=null, whereClause=null;
+  let om = rest.match(/\bORDER\s+BY\b/i);
+  if(om){ orderClause = rest.slice(om.index+om[0].length).trim(); rest = rest.slice(0, om.index); }
+  let gm = rest.match(/\bGROUP\s+BY\b/i);
+  if(gm){ groupClause = rest.slice(gm.index+gm[0].length).trim(); rest = rest.slice(0, gm.index); }
+  let wm = rest.match(/\bWHERE\b/i);
+  if(wm){ whereClause = rest.slice(wm.index+wm[0].length).trim(); rest = rest.slice(0, wm.index); }
+  const fm = rest.match(/\bFROM\b/i);
+  if(!fm) return {sqlcode:-104, message:'SYNTAX ERROR IN SELECT'};
+  const colsRaw = rest.slice(0, fm.index).trim();
+  const fromClause = rest.slice(fm.index+4).trim();
+
+  const {baseRows, tableColumnsMap} = this.evalFrom(fromClause);
+  if(baseRows===null) return {sqlcode:-204, message: this._lastFromError};
+
+  let rows = whereClause? baseRows.filter(r=>this.evalCond(r, whereClause)) : baseRows;
+  const colSpecs = colsRaw==='*' ? [{star:true}] : this.splitTopLevel(colsRaw, ',').map(c=>this.parseColSpec(c));
+  const hasAgg = colSpecs.some(c=>c.agg);
+
+  let outColumns, outRows;
+  if(groupClause || hasAgg){
+    const groupCols = groupClause? this.splitTopLevel(groupClause, ',').map(c=>c.trim().replace(/^[A-Za-z_][A-Za-z0-9_]*\./,'').toUpperCase()) : [];
+    const groups = new Map();
+    rows.forEach(r=>{
+      const key = groupCols.map(c=>String(r[c])).join('\u0001');
+      if(!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(r);
+    });
+    if(groups.size===0) groups.set('', []); // aggregate over zero rows still yields one summary row (e.g. COUNT(*)=0)
+    outColumns=[]; outRows=[];
+    for(const groupRows of groups.values()){
+      const outRow={};
+      colSpecs.forEach(spec=>{
+        const label = spec.alias || (spec.agg? spec.agg+'('+(spec.col||'*')+')' : spec.col);
+        if(!outColumns.includes(label)) outColumns.push(label);
+        outRow[label] = spec.agg? this.computeAgg(spec.agg, spec.col, groupRows) : (groupRows.length? groupRows[0][spec.col] : null);
+      });
+      outRows.push(outRow);
+    }
+  } else if(colSpecs.length===1 && colSpecs[0].star){
+    outColumns = tableColumnsMap;
+    outRows = rows.map(r=>{ const o={}; outColumns.forEach(c=>o[c]=r[c]); return o; });
+  } else {
+    outColumns = colSpecs.map(c=>c.alias||c.col);
+    outRows = rows.map(r=>{ const o={}; colSpecs.forEach(spec=>{ o[spec.alias||spec.col]=r[spec.col]; }); return o; });
+  }
+
+  if(distinct){
+    const seen=new Set(); outRows = outRows.filter(r=>{ const k=JSON.stringify(r); if(seen.has(k)) return false; seen.add(k); return true; });
+  }
+  if(orderClause){
+    const orderSpecs = this.splitTopLevel(orderClause, ',').map(o=>{
+      const om2 = o.trim().match(/^(\S+)\s*(ASC|DESC)?$/i);
+      return {col: (om2? om2[1]:o).replace(/^[A-Za-z_][A-Za-z0-9_]*\./,'').toUpperCase(), desc: om2 && (om2[2]||'').toUpperCase()==='DESC'};
+    });
+    outRows = outRows.slice().sort((a,b)=>{
+      for(const spec of orderSpecs){
+        const av=a[spec.col], bv=b[spec.col];
+        if(av>bv) return spec.desc?-1:1;
+        if(av<bv) return spec.desc?1:-1;
+      }
+      return 0;
+    });
+  }
+  if(outRows.length===0) return {sqlcode:100, message:'ROW NOT FOUND', rows:[], columns:outColumns};
+  return {sqlcode:0, message: outRows.length + ' ROW(S) SELECTED', rows: outRows, columns: outColumns};
+};
+DB2Engine.prototype.execute = function(sqlRaw){
+  const sql = sqlRaw.trim().replace(/;\s*$/,'');
+  const upper = sql.toUpperCase();
+
+  if(upper.startsWith('CREATE TABLE')){
+    const m = sql.match(/CREATE TABLE\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\((.*)\)\s*$/is);
+    if(!m) return {sqlcode:-104, message:'SYNTAX ERROR IN CREATE TABLE'};
+    const name=m[1].toUpperCase();
+    if(this.tables[name]) return {sqlcode:-601, message:name+' ALREADY EXISTS'};
+    const colDefs=this.splitTopLevel(m[2], ',');
+    const columns=colDefs.map(cd=>{
+      const cm=cd.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$/);
+      return {name: cm? cm[1].toUpperCase(): cd.toUpperCase(), type: cm? cm[2].trim().toUpperCase():'CHAR'};
+    });
+    this.tables[name] = {columns, rows:[]};
+    return {sqlcode:0, message:'DSNE617I CREATE TABLE ' + name + ' SUCCESSFUL'};
+  }
+  if(upper.startsWith('DROP TABLE')){
+    const name = sql.split(/\s+/)[2].toUpperCase();
+    if(!this.tables[name]) return {sqlcode:-204, message:name+' IS AN UNDEFINED NAME'};
+    delete this.tables[name];
+    return {sqlcode:0, message:'DSNE617I DROP TABLE ' + name + ' SUCCESSFUL'};
+  }
+  if(upper.startsWith('INSERT INTO')){
+    const m = sql.match(/INSERT INTO\s+([A-Za-z_][A-Za-z0-9_.]*)\s*(\(([^)]*)\))?\s*VALUES\s*\((.*)\)\s*$/is);
+    if(!m) return {sqlcode:-104, message:'SYNTAX ERROR IN INSERT'};
+    const name=m[1].toUpperCase(); const tbl=this.tables[name];
+    if(!tbl) return {sqlcode:-204, message:name+' IS AN UNDEFINED NAME'};
+    const colNames = m[3]? this.splitTopLevel(m[3], ',').map(c=>c.trim().toUpperCase()) : tbl.columns.map(c=>c.name);
+    const vals = this.splitTopLevel(m[4], ',').map(v=>this.parseValue(v));
+    if(colNames.length!==vals.length) return {sqlcode:-117, message:'NUMBER OF INSERT VALUES DOES NOT MATCH COLUMNS'};
+    const row={}; colNames.forEach((c,i)=>{ row[c]=vals[i]; });
+    tbl.rows.push(row);
+    return {sqlcode:0, message:'1 ROW INSERTED', rowsAffected:1};
+  }
+  if(upper.startsWith('SELECT')) return this.execSelect(sql);
+  if(upper.startsWith('UPDATE')){
+    const m = sql.match(/UPDATE\s+([A-Za-z_][A-Za-z0-9_.]*)\s+SET\s+(.*?)\s*(WHERE\s+(.*))?$/is);
+    if(!m) return {sqlcode:-104, message:'SYNTAX ERROR IN UPDATE'};
+    const name=m[1].toUpperCase(); const tbl=this.tables[name];
+    if(!tbl) return {sqlcode:-204, message:name+' IS AN UNDEFINED NAME'};
+    const assigns = this.splitTopLevel(m[2], ',').map(a=>{
+      const am=a.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
+      return {col:am[1].toUpperCase(), exprText:am[2]};
+    });
+    const whereClause=m[4]; let count=0;
+    tbl.rows.forEach(r=>{ if(this.evalCond(r, whereClause)){ assigns.forEach(a=>{ r[a.col]=this.evalSqlExpr(r, a.exprText); }); count++; } });
+    return {sqlcode: count===0?100:0, message: count+' ROW(S) UPDATED', rowsAffected:count};
+  }
+  if(upper.startsWith('DELETE FROM') || upper.startsWith('DELETE ')){
+    const m = sql.match(/DELETE FROM\s+([A-Za-z_][A-Za-z0-9_.]*)\s*(WHERE\s+(.*))?$/is);
+    if(!m) return {sqlcode:-104, message:'SYNTAX ERROR IN DELETE'};
+    const name=m[1].toUpperCase(); const tbl=this.tables[name];
+    if(!tbl) return {sqlcode:-204, message:name+' IS AN UNDEFINED NAME'};
+    const whereClause=m[3]; const before=tbl.rows.length;
+    tbl.rows = tbl.rows.filter(r=>!this.evalCond(r, whereClause));
+    const count = before - tbl.rows.length;
+    return {sqlcode: count===0?100:0, message: count+' ROW(S) DELETED', rowsAffected:count};
+  }
+  return {sqlcode:-199, message:'UNSUPPORTED SQL STATEMENT: ' + sql.split(/\s+/)[0]};
+};
+
+// ADDRESS DB2 / EXECSQL host-command handler with cursor support (DECLARE/OPEN/FETCH/CLOSE),
+// singleton SELECT...INTO, and pass-through for INSERT/UPDATE/DELETE/CREATE/DROP.
+function makeDB2HostCommandHandler(db2engine){
+  return function db2HostCommandHandler(cmd, address, rexx){
+    const upperAddr=(address||'').toUpperCase();
+    if(upperAddr!=='DB2' && upperAddr!=='DSNREXX') return null;
+    const trimmed=cmd.trim();
+    const m0=trimmed.match(/^EXECSQL\s+(.*)$/is);
+    if(!m0) return {rc:12, output:['UNKNOWN DB2 COMMAND: ' + cmd]};
+    let sql=m0[1].trim();
+    let m = sql.match(/^DECLARE\s+([A-Za-z_][A-Za-z0-9_]*)\s+CURSOR\s+FOR\s+(.*)$/is);
+    if(m){ rexx.cursors[m[1].toUpperCase()] = {sql:m[2], rows:null, pos:0, open:false}; return {rc:0, output:[], setVars:{SQLCODE:0}}; }
+    m = sql.match(/^OPEN\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/i);
+    if(m){
+      const cur = rexx.cursors[m[1].toUpperCase()];
+      if(!cur) return {rc:-518, output:['CURSOR NOT DECLARED'], setVars:{SQLCODE:-518}};
+      const res = db2engine.execute(cur.sql);
+      if(res.sqlcode<0) return {rc:res.sqlcode, output:[res.message], setVars:{SQLCODE:res.sqlcode}};
+      cur.rows=res.rows||[]; cur.columns=res.columns||[]; cur.pos=0; cur.open=true;
+      return {rc:0, output:[], setVars:{SQLCODE:0}};
+    }
+    m = sql.match(/^FETCH\s+([A-Za-z_][A-Za-z0-9_]*)\s+INTO\s+(.*)$/is);
+    if(m){
+      const cur = rexx.cursors[m[1].toUpperCase()];
+      const hostVars = m[2].split(',').map(s=>s.trim().replace(/^:/,''));
+      if(!cur || !cur.open) return {rc:-501, output:['CURSOR NOT OPEN'], setVars:{SQLCODE:-501}};
+      if(cur.pos>=cur.rows.length) return {rc:100, output:[], setVars:{SQLCODE:100}};
+      const row=cur.rows[cur.pos++];
+      const setVars={SQLCODE:0};
+      hostVars.forEach((hv,i)=>{ setVars[hv]=row[cur.columns[i]]; });
+      return {rc:0, output:[], setVars};
+    }
+    m = sql.match(/^CLOSE\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/i);
+    if(m){ const cur=rexx.cursors[m[1].toUpperCase()]; if(cur) cur.open=false; return {rc:0, output:[], setVars:{SQLCODE:0}}; }
+    m = sql.match(/^SELECT\s+(.*?)\s+INTO\s+(.*?)\s+FROM\s+(.*)$/is);
+    if(m){
+      const hostVars = m[2].split(',').map(s=>s.trim().replace(/^:/,''));
+      const rebuilt = 'SELECT ' + m[1] + ' FROM ' + m[3];
+      const res = db2engine.execute(rebuilt);
+      if(res.sqlcode<0) return {rc:res.sqlcode, output:[res.message], setVars:{SQLCODE:res.sqlcode}};
+      if(!res.rows || res.rows.length===0) return {rc:100, output:[], setVars:{SQLCODE:100}};
+      if(res.rows.length>1) return {rc:-811, output:['RESULT OF SELECT INTO IS MORE THAN ONE ROW'], setVars:{SQLCODE:-811}};
+      const row=res.rows[0]; const setVars={SQLCODE:0};
+      hostVars.forEach((hv,i)=>{ setVars[hv]=row[res.columns[i]]; });
+      return {rc:0, output:[], setVars};
+    }
+    const res = db2engine.execute(sql);
+    return {rc:res.sqlcode, output: res.sqlcode<0? [res.message]:[], setVars:{SQLCODE:res.sqlcode}};
+  };
+}
+
+// =====================================================================
+// ------------------------------ STATE ---------------------------------
+// =====================================================================
+const screenEl = document.getElementById('screen');
+const editArea = document.getElementById('editArea');
+const cmdInput = document.getElementById('cmdinput');
+const pfbar = document.getElementById('pfbar');
+const hdrRight = document.getElementById('hdrRight');
+const findNextBtn = document.getElementById('findNextBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const uploadBtn = document.getElementById('uploadBtn');
+const uploadFileInput = document.getElementById('uploadFileInput');
+
+// -----------------------------------------------------------------------
+// FATAL ERROR SURFACING
+// On mobile there's normally no way to see a JS error at all -- the app
+// just looks permanently blank, with no clue why. Any uncaught error or
+// unhandled promise rejection (including a failed startup) gets printed
+// directly into the terminal screen instead, so a problem is always at
+// least visible and reportable rather than silent.
+// -----------------------------------------------------------------------
+function renderFatalError(context, err){
+  try{
+    const raw = (err && err.stack) ? err.stack : String(err);
+    const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    screenEl.innerHTML =
+      '<div class="red">*** UNEXPECTED ERROR (' + esc(context) + ') ***</div>' +
+      '<div>&nbsp;</div>' +
+      '<div class="amber">' + esc(raw).replace(/\n/g,'<br>') + '</div>' +
+      '<div>&nbsp;</div>' +
+      '<div class="dim">Try reloading the page. If it keeps happening, clear this site\'s' +
+      ' data in your browser\'s site settings (or uninstall/reinstall if using the' +
+      ' installed app) and reload again.</div>';
+  }catch(e){ /* if even error rendering fails, there's nothing more we can do */ }
+}
+window.addEventListener('error', (e)=>{ renderFatalError('script error', (e && e.error) || (e && e.message) || e); });
+window.addEventListener('unhandledrejection', (e)=>{ renderFatalError('unhandled promise rejection', e && e.reason); });
+
+let STATE = { screen:'logon', currentMember:null, editStore:'members', jobCounter:1000, jobs:[], sdsfDetailIdx:null, userid:'MFUSER', panelMsg:null, panelReturnTo:null, histIdx:null, histDraft:'', lastFind:null };
+
+let MEMBERS = {};   // PDS "MFUSER.EXEC.LIBRARY": name -> {type:'REXX'|'JCL'|'TEXT'|'PANEL', content:string}
+let DATASETS = {};  // catalog of PS datasets: dsn -> {records:[...]}
+let TABLES = {};    // DB2 catalog: tablename -> {columns:[{name,type}], rows:[{...}]}
+let ISPF_POOL = {}; // shared ISPF variable pool (like real ISPF's shared screen pool): name -> value, used by panels + ADDRESS ISPEXEC VGET/VPUT
+let ISPF_TABLES = {}; // ISPF table services (TBCREATE/TBADD/TBSKIP/...): name -> {keys:[...], names:[...], rows:[{...}], crp, open}
+let CMD_HISTORY = []; // RETRIEVE-style command recall (Up/Down arrow on the command line), most recent last
+let ACTIVITY_LOG = []; // persistent audit trail of everything done in this terminal, newest last, capped
+const db2 = new DB2Engine(TABLES);
+const db2HostCommandHandler = makeDB2HostCommandHandler(db2);
+function hostCommandHandler(cmd, address, rexx){
+  const upperAddr=(address||'').toUpperCase();
+  if(upperAddr==='DB2' || upperAddr==='DSNREXX') return db2HostCommandHandler(cmd, address, rexx);
+  if(upperAddr==='ISPEXEC' || upperAddr==='ISPLINK') return ispexecHostCommandHandler(cmd, address, rexx);
+  return tsoHostCommandHandler(cmd, address, rexx);
+}
+
+// ADDRESS ISPEXEC handler: a real (subset) bridge into the shared ISPF
+// variable pool used by the PANELS runtime (option 9). VGET/VPUT move
+// values between REXX variables and the shared pool, exactly like real
+// ISPF dialogs. DISPLAY PANEL cannot block a running exec for live input
+// in this synchronous interpreter, so it renders a read-only text preview
+// of the panel (labels + current pool values) into SAY-style output --
+// documented as such. For a fully interactive panel, run it from option 9.
+function ispexecHostCommandHandler(cmd, address, rexx){
+  const trimmed = cmd.trim();
+  const upper = trimmed.toUpperCase();
+  let m;
+  m = trimmed.match(/^VGET\s*\(\s*([^)]*)\)/i) || trimmed.match(/^VGET\s+(.+)$/i);
+  if(m){
+    const names = m[1].split(/[\s,]+/).filter(Boolean);
+    names.forEach(nm=>{ rexx.vars[nm.toUpperCase()] = ISPF_POOL[nm.toUpperCase()]!==undefined? ISPF_POOL[nm.toUpperCase()] : ''; });
+    return {rc:0, output:[]};
+  }
+  m = trimmed.match(/^VPUT\s*\(\s*([^)]*)\)/i) || trimmed.match(/^VPUT\s+(.+)$/i);
+  if(m){
+    const names = m[1].split(/[\s,]+/).filter(Boolean);
+    names.forEach(nm=>{ ISPF_POOL[nm.toUpperCase()] = rexx.lookupVar(nm); });
+    saveState();
+    return {rc:0, output:[]};
+  }
+  m = upper.match(/^DISPLAY\s+PANEL\s*\(\s*([A-Za-z0-9_$#@]+)\s*\)/);
+  if(m){
+    const panelName = m[1].toUpperCase();
+    const mem = MEMBERS[panelName];
+    if(!mem || mem.type!=='PANEL') return {rc:20, output:['ISPS021 PANEL ' + panelName + ' NOT FOUND'], setVars:{'.MSG':''}};
+    const parsed = parsePanel(mem.content);
+    const out = ['---------------------------- ' + panelName + ' (READ-ONLY PREVIEW) ----------------------------'];
+    parsed.body.forEach(row=>{ out.push(renderPanelRowPlain(row)); });
+    out.push('---------------------------------------------------------------------------------------');
+    out.push('(ADDRESS ISPEXEC DISPLAY PANEL renders a read-only snapshot -- an exec cannot');
+    out.push('collect live input this way. Run this panel interactively from option 9, PANELS.)');
+    logActivity('PANEL PREVIEW', panelName + ' (from REXX)');
+    return {rc:0, output: out};
+  }
+  // ISPF table services -- an in-memory, persistent subset (TBCREATE/
+  // TBOPEN/TBADD/TBGET/TBTOP/TBSKIP/TBBOTTOM/TBCLOSE/TBQUERY). Column
+  // values move to/from the shared ISPF_POOL, exactly like real ISPF:
+  // VPUT your row's values first, then TBADD; after TBGET/TBSKIP/TBTOP/
+  // TBBOTTOM, VGET the columns back out.
+  m = trimmed.match(/^TBCREATE\s+([A-Za-z0-9_$#@]+)(.*)$/i);
+  if(m){
+    const name = m[1].toUpperCase();
+    const optText = m[2];
+    const replace = /\bREPLACE\b/i.test(optText);
+    if(ISPF_TABLES[name] && !replace) return {rc:8, output:['ISPS106 TABLE ' + name + ' ALREADY EXISTS'], setVars:{'.MSG':''}};
+    const keysM = optText.match(/KEYS\s*\(([^)]*)\)/i);
+    const namesM = optText.match(/NAMES\s*\(([^)]*)\)/i);
+    const keys = keysM? keysM[1].trim().split(/\s+/).filter(Boolean).map(s=>s.toUpperCase()) : [];
+    const names = namesM? namesM[1].trim().split(/\s+/).filter(Boolean).map(s=>s.toUpperCase()) : [];
+    ISPF_TABLES[name] = {keys, names, rows:[], crp:-1, open:true};
+    saveState();
+    logActivity('TABLE CREATE', name);
+    return {rc:0, output:[]};
+  }
+  m = trimmed.match(/^TBOPEN\s+([A-Za-z0-9_$#@]+)/i);
+  if(m){
+    const name = m[1].toUpperCase();
+    if(!ISPF_TABLES[name]) return {rc:8, output:['ISPS105 TABLE ' + name + ' NOT FOUND'], setVars:{'.MSG':''}};
+    ISPF_TABLES[name].open = true;
+    return {rc:0, output:[]};
+  }
+  m = trimmed.match(/^TBADD\s+([A-Za-z0-9_$#@]+)/i);
+  if(m){
+    const tbl = ISPF_TABLES[m[1].toUpperCase()];
+    if(!tbl) return {rc:8, output:['ISPS105 TABLE NOT FOUND'], setVars:{'.MSG':''}};
+    const row = {};
+    tbl.keys.concat(tbl.names).forEach(col=>{ row[col] = ISPF_POOL[col]!==undefined? ISPF_POOL[col] : ''; });
+    tbl.rows.push(row);
+    tbl.crp = tbl.rows.length - 1;
+    saveState();
+    return {rc:0, output:[]};
+  }
+  m = trimmed.match(/^TB(TOP|BOTTOM)\s+([A-Za-z0-9_$#@]+)/i);
+  if(m){
+    const tbl = ISPF_TABLES[m[2].toUpperCase()];
+    if(!tbl) return {rc:8, output:['ISPS105 TABLE NOT FOUND'], setVars:{'.MSG':''}};
+    tbl.crp = m[1].toUpperCase()==='TOP' ? 0 : tbl.rows.length-1;
+    if(tbl.rows.length===0) return {rc:8, output:['ISPS100 TABLE IS EMPTY'], setVars:{'.MSG':''}};
+    const row = tbl.rows[tbl.crp];
+    tbl.keys.concat(tbl.names).forEach(col=> ISPF_POOL[col]=row[col]);
+    saveState();
+    return {rc:0, output:[]};
+  }
+  m = trimmed.match(/^TBSKIP\s+([A-Za-z0-9_$#@]+)(.*)$/i);
+  if(m){
+    const tbl = ISPF_TABLES[m[1].toUpperCase()];
+    if(!tbl) return {rc:8, output:['ISPS105 TABLE NOT FOUND'], setVars:{'.MSG':''}};
+    const numM = m[2].match(/NUMBER\s*\(\s*(-?\d+)\s*\)/i);
+    const n = numM? parseInt(numM[1],10) : 1;
+    const next = (tbl.crp<0? 0 : tbl.crp) + n;
+    if(next<0 || next>=tbl.rows.length){ tbl.crp = next<0? -1 : tbl.rows.length; return {rc:8, output:['ISPS101 END OF TABLE'], setVars:{'.MSG':''}}; }
+    tbl.crp = next;
+    const row = tbl.rows[tbl.crp];
+    tbl.keys.concat(tbl.names).forEach(col=> ISPF_POOL[col]=row[col]);
+    saveState();
+    return {rc:0, output:[]};
+  }
+  m = trimmed.match(/^TBGET\s+([A-Za-z0-9_$#@]+)/i);
+  if(m){
+    const tbl = ISPF_TABLES[m[1].toUpperCase()];
+    if(!tbl) return {rc:8, output:['ISPS105 TABLE NOT FOUND'], setVars:{'.MSG':''}};
+    if(tbl.crp<0 || tbl.crp>=tbl.rows.length) return {rc:8, output:['ISPS102 NO CURRENT ROW'], setVars:{'.MSG':''}};
+    const row = tbl.rows[tbl.crp];
+    tbl.keys.concat(tbl.names).forEach(col=> ISPF_POOL[col]=row[col]);
+    return {rc:0, output:[]};
+  }
+  m = trimmed.match(/^TBQUERY\s+([A-Za-z0-9_$#@]+)/i);
+  if(m){
+    const tbl = ISPF_TABLES[m[1].toUpperCase()];
+    if(!tbl) return {rc:8, output:['ISPS105 TABLE NOT FOUND'], setVars:{'.MSG':''}};
+    ISPF_POOL['ZTDROWS'] = tbl.rows.length;
+    return {rc:0, output:[], setVars:{'ZTDROWS': tbl.rows.length}};
+  }
+  m = trimmed.match(/^TBCLOSE\s+([A-Za-z0-9_$#@]+)/i);
+  if(m){
+    const tbl = ISPF_TABLES[m[1].toUpperCase()];
+    if(tbl) tbl.open = false;
+    saveState();
+    return {rc:0, output:[]};
+  }
+  if(upper.startsWith('SETMSG')) return {rc:0, output:[]};
+  if(upper.startsWith('CONTROL')) return {rc:0, output:[]};
+  if(upper.startsWith('LIBDEF')) return {rc:0, output:[]};
+  return {rc:20, output:['ISPS013 UNSUPPORTED ISPEXEC SERVICE: ' + cmd]};
+}
+
+// ---------------------------------------------------------------------
+// ACTIVITY LOG -- a persistent, append-only record of what you've done in
+// this terminal (logons, commands, execs run, jobs submitted, members
+// edited, panels run, datasets touched). This is separate from the data
+// itself (members/datasets/tables) and is what makes the terminal feel
+// like it "remembers" your session history, not just your files.
+// ---------------------------------------------------------------------
+const ACTIVITY_LOG_MAX = 500;
+function logActivity(kind, detail){
+  ACTIVITY_LOG.push({ts: new Date().toISOString(), screen: STATE.screen, kind, detail: detail||''});
+  if(ACTIVITY_LOG.length > ACTIVITY_LOG_MAX) ACTIVITY_LOG.splice(0, ACTIVITY_LOG.length - ACTIVITY_LOG_MAX);
+}
+
+const DEFAULT_MEMBERS = {
+  'HELLO': {type:'REXX', content:
+`/* REXX ****************************************/
+/* Simple hello world                            */
+/**************************************************/
+SAY 'HELLO, MAINFRAME WORLD!'
+name = 'REXX'
+SAY 'RUNNING ON' name 'VIA THE 3270 EMULATOR'
+DO i = 1 TO 3
+  SAY 'ITERATION' i
+END
+EXIT 0`},
+  'SUMNUM': {type:'REXX', content:
+`/* REXX - sum numbers 1..N, passed as ARG ******/
+ARG n
+IF n = '' THEN n = 10
+total = 0
+DO i = 1 TO n
+  total = total + i
+END
+SAY 'SUM OF 1 TO' n '=' total
+EXIT 0`},
+  'FIZZBUZZ': {type:'REXX', content:
+`/* REXX - classic FizzBuzz to 20 ***************/
+DO i = 1 TO 20
+  IF i // 15 = 0 THEN SAY 'FIZZBUZZ'
+  ELSE IF i // 3 = 0 THEN SAY 'FIZZ'
+  ELSE IF i // 5 = 0 THEN SAY 'BUZZ'
+  ELSE SAY i
+END
+EXIT 0`},
+  'READFILE': {type:'REXX', content:
+`/* REXX - read a dataset with ADDRESS TSO / EXECIO, like real TSO REXX */
+ADDRESS TSO
+"ALLOC DD(IN) DSN('MFUSER.TEST.DATA') SHR"
+"EXECIO * DISKR IN (STEM LINE. FINIS"
+SAY 'READ' LINE.0 'RECORDS FROM MFUSER.TEST.DATA:'
+DO i = 1 TO LINE.0
+  SAY '  ' i ':' LINE.i
+END
+"FREE DD(IN)"
+EXIT 0`},
+  'WRITEFILE': {type:'REXX', content:
+`/* REXX - write a new dataset with ADDRESS TSO / EXECIO */
+ADDRESS TSO
+"ALLOC DD(OUT) DSN('MFUSER.REXX.OUTPUT') NEW"
+OUT.1 = 'LINE WRITTEN BY REXX'
+OUT.2 = 'CURRENT DATE:' DATE()
+OUT.3 = 'CURRENT TIME:' TIME()
+OUT.0 = 3
+"EXECIO * DISKW OUT (STEM OUT. FINIS"
+"FREE DD(OUT)"
+SAY 'WROTE' OUT.0 'RECORDS TO MFUSER.REXX.OUTPUT'
+SAY 'CHECK OPTION 6 (DATASETS) TO BROWSE IT'
+EXIT 0`},
+  'RUNIT': {type:'JCL', content:
+`//RUNIT    JOB (ACCT),'RUN REXX',CLASS=A,MSGCLASS=X
+//*
+//STEP1    EXEC PGM=IKJEFT01,PARM='%HELLO'
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//SYSEXEC  DD DSN=MFUSER.REXX.EXEC,DISP=SHR
+//`},
+  'IEFBR14': {type:'JCL', content:
+`//IEFBR14  JOB (ACCT),'ALLOC TEST',CLASS=A,MSGCLASS=X
+//*
+//STEP1    EXEC PGM=IEFBR14
+//DD1      DD DSN=MFUSER.TEST.DATA2,
+//            DISP=(NEW,CATLG,DELETE),
+//            SPACE=(TRK,(1,1)),
+//            UNIT=SYSDA
+//`},
+  'PIPELINE': {type:'JCL', content:
+`//PIPELIN  JOB (ACCT),'MULTI-STEP PIPELINE',CLASS=A,MSGCLASS=X
+//*  Demonstrates IEBGENER + SORT + a REXX step, chained through
+//*  cataloged datasets, with a COND= that skips STEP3 if STEP2 failed.
+//STEP1    EXEC PGM=IEBGENER
+//SYSUT1   DD *
+ZEBRA RECORD
+APPLE RECORD
+MANGO RECORD
+CHERRY RECORD
+//SYSUT2   DD DSN=MFUSER.PIPE.RAW,DISP=(NEW,CATLG,DELETE)
+//SYSPRINT DD SYSOUT=*
+//STEP2    EXEC PGM=SORT
+//SORTIN   DD DSN=MFUSER.PIPE.RAW,DISP=SHR
+//SORTOUT  DD DSN=MFUSER.PIPE.SORTED,DISP=(NEW,CATLG,DELETE)
+//SYSIN    DD *
+  SORT FIELDS=(1,10,CH,A)
+//STEP3    EXEC PGM=IKJEFT01,PARM='%HELLO',COND=(4,LT)
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//`},
+  'RUNREAD': {type:'JCL', content:
+`//RUNREAD  JOB (ACCT),'RUN READFILE',CLASS=A,MSGCLASS=X
+//*  Runs READFILE.  Note: MFUSER.TEST.DATA must exist first --
+//*  see option 6 (DATASETS) which seeds it by default.
+//STEP1    EXEC PGM=IKJEFT01,PARM='%READFILE'
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//`},
+  'DB2QUERY': {type:'REXX', content:
+`/* REXX - ADDRESS DB2 with a cursor, classic embedded-SQL pattern */
+ADDRESS DB2
+"EXECSQL DECLARE C1 CURSOR FOR SELECT EMPNO, NAME, DEPT, SALARY FROM EMP ORDER BY SALARY DESC"
+"EXECSQL OPEN C1"
+SAY 'EMPLOYEES BY SALARY:'
+DO WHILE SQLCODE = 0
+  "EXECSQL FETCH C1 INTO :EMPNO, :NAME, :DEPT, :SALARY"
+  IF SQLCODE = 0 THEN
+    SAY '  ' EMPNO NAME DEPT SALARY
+END
+"EXECSQL CLOSE C1"
+EXIT 0`},
+  'DB2UPDT': {type:'REXX', content:
+`/* REXX - singleton SELECT INTO, INSERT, UPDATE via ADDRESS DB2 */
+ADDRESS DB2
+"EXECSQL SELECT NAME INTO :WHO FROM EMP WHERE EMPNO = 10"
+SAY 'LOOKUP EMPNO 10:' WHO '  SQLCODE=' SQLCODE
+"EXECSQL INSERT INTO EMP (EMPNO, NAME, DEPT, SALARY) VALUES (40, 'FRANK', 'D02', 51000)"
+SAY 'INSERT SQLCODE=' SQLCODE
+"EXECSQL UPDATE EMP SET SALARY = SALARY + 1000 WHERE DEPT = 'D01'"
+SAY 'GAVE D01 A RAISE, SQLCODE=' SQLCODE
+EXIT 0`},
+  'RUNDB2': {type:'JCL', content:
+`//RUNDB2   JOB (ACCT),'RUN DB2 REXX',CLASS=A,MSGCLASS=X
+//*  Runs DB2QUERY, which uses ADDRESS DB2 / EXECSQL against the
+//*  EMP table (pre-seeded - see option 7, DB2).
+//STEP1    EXEC PGM=IKJEFT01,PARM='%DB2QUERY'
+//SYSTSPRT DD SYSOUT=*
+//SYSTSIN  DD DUMMY
+//`},
+  'SQLBATCH': {type:'JCL', content:
+`//SQLBATCH JOB (ACCT),'BATCH SQL VIA DSNTEP2',CLASS=A,MSGCLASS=X
+//*  DSNTEP2 is IBM's classic sample batch dynamic-SQL program:
+//*  it reads semicolon-terminated SQL statements from SYSIN and
+//*  prints a report to SYSPRINT.  Simulated here the same way.
+//STEP1    EXEC PGM=DSNTEP2
+//SYSPRINT DD SYSOUT=*
+//SYSIN    DD *
+  SELECT * FROM EMP;
+  SELECT DEPTNO, DEPTNAME FROM DEPT;
+  INSERT INTO EMP (EMPNO, NAME, DEPT, SALARY) VALUES (50, 'GRACE', 'D03', 58000);
+  SELECT * FROM EMP WHERE DEPT = 'D03';
+/*
+//`},
+  'EMPLOOKUP': {type:'PANEL', content:
+`)ATTR
+)BODY
+-------------------- EMPLOYEE LOOKUP (ISPF PANEL DEMO) --------------------
+
+ %Enter EMPNO . . . _EMPNO(6)
+
+ %Name    . . . . . . #NAME(20)
+ %Dept    . . . . . . #DEPT(4)
+ %Salary  . . . . . . #SALARY(10)
+
+ Type an EMPNO (try 10, 20, or 30) and press ENTER. This panel chains
+ to the EMPLKEXEC exec below, which does the real DB2 lookup and writes
+ the result back into the shared ISPF pool. Run this panel again (R
+ EMPLOOKUP from option 9) to see NAME/DEPT/SALARY filled in.
+ PF3 to cancel.
+)INIT
+ NAME = ''
+ DEPT = ''
+ SALARY = ''
+)PROC
+ VER(&EMPNO,NUM)
+ ZSEL = 'EX EMPLKEXEC'
+)END`},
+  'EMPLKEXEC': {type:'REXX', content:
+`/* REXX - backs the EMPLOOKUP panel: reads EMPNO from the shared ISPF  */
+/* variable pool (ADDRESS ISPEXEC VGET), looks it up via ADDRESS DB2,  */
+/* then writes the result back into the pool (VPUT) for the panel to  */
+/* show next time it's displayed -- a real ISPF panel/exec round trip.*/
+ADDRESS ISPEXEC
+"VGET EMPNO"
+ADDRESS DB2
+"EXECSQL SELECT NAME, DEPT, SALARY INTO :NM, :DP, :SAL FROM EMP WHERE EMPNO = " EMPNO
+IF SQLCODE = 0 THEN DO
+  NAME = NM
+  DEPT = DP
+  SALARY = SAL
+  SAY 'FOUND EMPNO' EMPNO': ' NM DP SAL
+END
+ELSE DO
+  NAME = '(NOT FOUND)'
+  DEPT = ''
+  SALARY = ''
+  SAY 'EMPNO' EMPNO 'NOT FOUND, SQLCODE=' SQLCODE
+END
+ADDRESS ISPEXEC
+"VPUT NAME DEPT SALARY"
+SAY 'Go back to PANELS (option 9) and run EMPLOOKUP again to see the result.'
+EXIT 0`},
+};
+
+const DEFAULT_DATASETS = {
+  'MFUSER.TEST.DATA': { records: ['FIRST TEST RECORD', 'SECOND TEST RECORD', 'THIRD TEST RECORD'] }
+};
+
+const DEFAULT_TABLES = {
+  'EMP': {
+    columns: [{name:'EMPNO',type:'INTEGER'},{name:'NAME',type:'CHAR(20)'},{name:'DEPT',type:'CHAR(4)'},{name:'SALARY',type:'DECIMAL(9,2)'}],
+    rows: [
+      {EMPNO:10, NAME:'ALICE', DEPT:'D01', SALARY:55000},
+      {EMPNO:20, NAME:'BOB',   DEPT:'D02', SALARY:62000},
+      {EMPNO:30, NAME:'CAROL', DEPT:'D01', SALARY:71000},
+    ]
+  },
+  'DEPT': {
+    columns: [{name:'DEPTNO',type:'CHAR(3)'},{name:'DEPTNAME',type:'CHAR(20)'}],
+    rows: [
+      {DEPTNO:'D01', DEPTNAME:'ACCOUNTING'},
+      {DEPTNO:'D02', DEPTNAME:'MARKETING'},
+    ]
+  }
+};
+
+// ---------------------------------------------------------------------
+// FOLDER CONNECTION (File System Access API - Chrome/Edge/Chromium only)
+// Optional, strictly-better storage tier: pick a real folder on disk and
+// every save writes a real, human-readable mf3270-session.json file into
+// it -- no export/import needed, and you can point a new browser/laptop
+// at that same folder (e.g. if it's in Dropbox/OneDrive/a synced drive)
+// to pick up right where you left off. The folder handle is remembered
+// in IndexedDB; browsers require a fresh click to re-grant permission on
+// a later visit (they won't silently hand out disk access), so that one
+// step -- typing RECONNECT -- can't be fully automatic, but the folder
+// itself, once granted, is used automatically for the rest of that visit.
+// Falls back cleanly to localStorage (see below) when unsupported/unused.
+// ---------------------------------------------------------------------
+const IDB_NAME = 'mf3270-fsa';
+const IDB_STORE = 'handles';
+const SESSION_FILENAME = 'mf3270-session.json';
+const FSA_SUPPORTED = typeof window !== 'undefined' && !!window.showDirectoryPicker;
+let DIR_HANDLE = null;
+let PENDING_RECONNECT_HANDLE = null;
+let PENDING_RECONNECT_NAME = null;
+
+function idbOpen(){
+  return new Promise((resolve, reject)=>{
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = ()=>{ req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error);
+  });
+}
+async function idbGet(key){
+  const db = await idbOpen();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error);
+  });
+}
+async function idbSet(key, val){
+  const db = await idbOpen();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(val, key);
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+async function idbDelete(key){
+  const db = await idbOpen();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+async function writeFolderSession(){
+  if(!DIR_HANDLE) return;
+  try{
+    const fileHandle = await DIR_HANDLE.getFileHandle(SESSION_FILENAME, {create:true});
+    const writable = await fileHandle.createWritable();
+    await writable.write(JSON.stringify(currentSessionBlob(), null, 2));
+    await writable.close();
+  }catch(e){ console.error('folder write failed', e); }
+}
+async function readFolderSession(){
+  if(!DIR_HANDLE) return null;
+  try{
+    const fileHandle = await DIR_HANDLE.getFileHandle(SESSION_FILENAME, {create:false});
+    const file = await fileHandle.getFile();
+    return JSON.parse(await file.text());
+  }catch(e){ return null; }
+}
+async function connectFolder(){
+  if(!FSA_SUPPORTED){
+    appendResultScreen('CONNECT FOLDER', [
+      {text:'This browser does not support folder access (the File System Access API).', cls:'amber'},
+      {text:'On desktop that means Chrome, Edge, or another Chromium browser, not Firefox/Safari.'},
+      {text:'On mobile, no browser supports it yet (including Chrome for Android) -- there'},
+      {text:'is no system folder picker it can hook into.'},
+      {text:'Your session will keep saving to this device\'s local storage instead, which'},
+      {text:'persists across closing/reopening the app. Use EXPORT / IMPORT to move a'},
+      {text:'session to another device.'},
+    ]);
+    return;
+  }
+  let handle;
+  try{ handle = await window.showDirectoryPicker({mode:'readwrite'}); }
+  catch(e){
+    if(e && e.name === 'AbortError') return; // user cancelled the picker, no message needed
+    appendResultScreen('CONNECT FOLDER FAILED', [{text:'Could not connect: ' + e.message, cls:'red'}]);
+    return;
+  }
+  DIR_HANDLE = handle;
+  try{ await idbSet('sessionDir', handle); }catch(e){ /* ignore - still works for this visit */ }
+  const blob = await readFolderSession();
+  if(blob) applySessionBlob(blob); else await writeFolderSession();
+  PENDING_RECONNECT_HANDLE = null;
+  logActivity('FOLDER CONNECT', handle.name);
+  appendResultScreen('FOLDER CONNECTED', [
+    {text:'Connected to folder: ' + handle.name, cls:'green'},
+    {text:''},
+    {text:(blob? 'Loaded an existing session from ' : 'Created a new ') + SESSION_FILENAME + ' in that folder.'},
+    {text:'From now on, everything you do saves there in real time.'},
+    {text:'Point another Chrome/Edge browser at the same folder (e.g. a synced'},
+    {text:'Dropbox/OneDrive folder) and CONNECT there too to share this session.'},
+  ]);
+}
+async function disconnectFolder(){
+  DIR_HANDLE = null;
+  try{ await idbDelete('sessionDir'); }catch(e){}
+  appendResultScreen('FOLDER DISCONNECTED', [{text:'Back to saving in this browser\'s local storage only.'}]);
+}
+async function tryReconnectStoredFolder(){
+  if(!FSA_SUPPORTED) return false;
+  let handle;
+  try{ handle = await idbGet('sessionDir'); }catch(e){ return false; }
+  if(!handle) return false;
+  try{
+    const perm = await handle.queryPermission({mode:'readwrite'});
+    if(perm === 'granted'){ DIR_HANDLE = handle; return true; }
+    PENDING_RECONNECT_HANDLE = handle;
+    PENDING_RECONNECT_NAME = handle.name;
+    return false;
+  }catch(e){ return false; }
+}
+async function reconnectPending(){
+  if(!PENDING_RECONNECT_HANDLE){ appendResultScreen('RECONNECT', [{text:'No previously connected folder to reconnect to.'}]); return; }
+  const handle = PENDING_RECONNECT_HANDLE;
+  try{
+    const perm = await handle.requestPermission({mode:'readwrite'});
+    if(perm !== 'granted'){ appendResultScreen('RECONNECT', [{text:'Permission was not granted.'}]); return; }
+    DIR_HANDLE = handle;
+    PENDING_RECONNECT_HANDLE = null;
+    const blob = await readFolderSession();
+    if(blob) applySessionBlob(blob);
+    appendResultScreen('FOLDER RECONNECTED', [{text:'Reconnected to folder: ' + handle.name, cls:'green'}, {text:'Session restored from ' + SESSION_FILENAME + '.'}]);
+  }catch(e){
+    appendResultScreen('RECONNECT FAILED', [{text:e.message, cls:'red'}]);
+  }
+}
+
+// ---------------------------------------------------------------------
+// PERSISTENCE
+// Three tiers, in priority order:
+//   1. Connected folder (see above) -- real files on disk, if you've
+//      used CONNECT. Most durable and the only one that's inspectable
+//      and shareable between browsers/machines without a manual step.
+//   2. Browser localStorage, under one key holding the whole session.
+//      Automatic, no setup, but tied to this one browser profile/machine.
+//   3. The artifact key-value storage API, when running inside Claude.ai --
+//      a best-effort mirror so state also follows your Claude account.
+// EXPORT / IMPORT (a downloadable .json snapshot) remain available as a
+// manual fallback that works everywhere, with none of the above.
+// ---------------------------------------------------------------------
+const LS_KEY = 'mf3270_desktop_session_v1';
+
+function currentSessionBlob(){
+  return {
+    savedAt: new Date().toISOString(),
+    members: MEMBERS,
+    datasets: DATASETS,
+    tables: TABLES,
+    jobCounter: STATE.jobCounter,
+    ispfPool: ISPF_POOL,
+    ispfTables: ISPF_TABLES,
+    cmdHistory: CMD_HISTORY,
+    activityLog: ACTIVITY_LOG,
+  };
+}
+function applySessionBlob(blob){
+  MEMBERS = blob.members || JSON.parse(JSON.stringify(DEFAULT_MEMBERS));
+  DATASETS = blob.datasets || JSON.parse(JSON.stringify(DEFAULT_DATASETS));
+  TABLES = blob.tables || JSON.parse(JSON.stringify(DEFAULT_TABLES));
+  db2.tables = TABLES;
+  STATE.jobCounter = blob.jobCounter || 1000;
+  ISPF_POOL = blob.ispfPool || {};
+  ISPF_TABLES = blob.ispfTables || {};
+  CMD_HISTORY = blob.cmdHistory || [];
+  ACTIVITY_LOG = blob.activityLog || [];
+}
+function safeParse(str, fallback){ try{ return JSON.parse(str); }catch(e){ return JSON.parse(JSON.stringify(fallback)); } }
+
+async function loadState(){
+  const folderReconnected = await tryReconnectStoredFolder();
+  if(folderReconnected){
+    const blob = await readFolderSession();
+    if(blob) applySessionBlob(blob); else { applySessionBlob({}); await writeFolderSession(); }
+    return;
+  }
+  // Not on a connected folder (not supported, never connected, or this
+  // browser needs a fresh RECONNECT click) -- fall back to localStorage.
+  let fromLocal = null;
+  try{
+    const raw = window.localStorage && window.localStorage.getItem(LS_KEY);
+    if(raw) fromLocal = safeParse(raw, null);
+  }catch(e){ /* localStorage unavailable (e.g. private mode) - fall through */ }
+
+  if(fromLocal){
+    applySessionBlob(fromLocal);
+    return;
+  }
+
+  // No local copy yet -- try to migrate from the older Claude.ai-only
+  // artifact storage (used by earlier versions of this tool), then seed
+  // defaults if that's empty too.
+  if(!window.storage){
+    applySessionBlob({});
+    saveState();
+    return;
+  }
+  const p1 = window.storage.get('mf3270:members', false).then(r=>r&&r.value).catch(()=>null);
+  const p2 = window.storage.get('mf3270:datasets', false).then(r=>r&&r.value).catch(()=>null);
+  const [m,d] = await Promise.all([p1,p2]);
+  applySessionBlob({
+    members: m ? safeParse(m, DEFAULT_MEMBERS) : JSON.parse(JSON.stringify(DEFAULT_MEMBERS)),
+    datasets: d ? safeParse(d, DEFAULT_DATASETS) : JSON.parse(JSON.stringify(DEFAULT_DATASETS)),
+    tables: JSON.parse(JSON.stringify(DEFAULT_TABLES)),
+  });
+  saveState();
+}
+
+function saveState(){
+  const blob = currentSessionBlob();
+  const json = JSON.stringify(blob);
+  try{ window.localStorage && window.localStorage.setItem(LS_KEY, json); }catch(e){ /* quota / private mode */ }
+  if(window.storage){
+    // best-effort mirror so it also follows the Claude.ai account
+    window.storage.set('mf3270:session', json, false).catch(()=>{});
+  }
+  if(DIR_HANDLE){
+    // best-effort real-file write; fire-and-forget so typing stays snappy
+    writeFolderSession().catch(()=>{});
+  }
+}
+// Kept as distinct names (called throughout the app after each mutation)
+// but they all just persist the whole session now.
+function saveMembers(){ saveState(); }
+function saveDatasets(){ saveState(); }
+function saveTables(){ saveState(); }
+
+function exportSession(){
+  const blob = currentSessionBlob();
+  const json = JSON.stringify(blob, null, 2);
+  const file = new Blob([json], {type:'application/json'});
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  a.href = url;
+  a.download = 'mf3270-session-' + stamp + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 5000);
+}
+function importSessionFromFile(file){
+  const reader = new FileReader();
+  reader.onload = () => {
+    try{
+      const blob = JSON.parse(reader.result);
+      if(!blob || typeof blob !== 'object') throw new Error('not a session file');
+      applySessionBlob(blob);
+      saveState();
+      appendResultScreen('IMPORT', [
+        {text:'Session imported successfully.'},
+        {text:'Members: ' + Object.keys(MEMBERS).length + '   Datasets: ' + Object.keys(DATASETS).length + '   DB2 tables: ' + Object.keys(TABLES).length},
+      ]);
+    }catch(e){
+      appendResultScreen('IMPORT FAILED', [{text:'Could not read that file as a session export: ' + e.message, cls:'red'}]);
+    }
+  };
+  reader.onerror = () => appendResultScreen('IMPORT FAILED', [{text:'Could not read the selected file.', cls:'red'}]);
+  reader.readAsText(file);
+}
+
+// ---------------------------------------------------------------------
+// DOWNLOAD / UPLOAD -- move a single member or dataset's content to/from
+// a plain .txt file on real disk, distinct from EXPORT/IMPORT above
+// (which snapshot the *whole* session as one .json file). DOWNLOAD uses
+// showSaveFilePicker so you choose exactly where it goes, when the
+// browser supports it (falls back to a normal browser download
+// otherwise); UPLOAD reads a local .txt file's content straight into a
+// member or dataset (creating it if it doesn't exist yet).
+// ---------------------------------------------------------------------
+async function downloadContent(name, content, suggestedName, notify){
+  notify = notify || ((msg, cls) => appendResultScreen('DOWNLOAD', [{text: msg, cls}]));
+  logActivity('DOWNLOAD', name);
+  if(window.showSaveFilePicker){
+    let handle;
+    try{
+      handle = await window.showSaveFilePicker({
+        suggestedName,
+        types: [{description: 'Text file', accept: {'text/plain': ['.txt']}}],
+      });
+    }catch(e){
+      if(e && e.name === 'AbortError') return; // user cancelled the picker
+      notify('Download failed: ' + e.message, 'red');
+      return;
+    }
+    try{
+      const writable = await handle.createWritable();
+      await writable.write(content);
+      await writable.close();
+      notify(name + ' saved as ' + handle.name + '.', 'green');
+    }catch(e){
+      notify('Download failed: ' + e.message, 'red');
+    }
+    return;
+  }
+  // Fallback for browsers without a save-location picker (e.g. Firefox):
+  // a normal browser download to the default Downloads folder.
+  const blob = new Blob([content], {type: 'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = suggestedName;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  notify(name + ' downloaded as ' + suggestedName + ' (this browser can\'t choose a folder, so it went to your default Downloads location).', 'green');
+}
+function doDownload(name){
+  if(!name){ appendResultScreen('DOWNLOAD', [{text:'Usage: DOWNLOAD <member-or-dataset-name>'}]); return; }
+  if(MEMBERS[name]){ downloadContent(name, MEMBERS[name].content, name + '.txt'); return; }
+  if(DATASETS[name]){ downloadContent(name, DATASETS[name].records.join('\n'), name.replace(/[^A-Za-z0-9_.-]/g,'_') + '.txt'); return; }
+  appendResultScreen('DOWNLOAD', [{text:'Not found (checked members and datasets): ' + name}]);
+}
+
+let PENDING_UPLOAD = null; // {name, kind:'member'|'dataset'|'editarea', type}
+function doUpload(name, kindHint){
+  if(!name){
+    appendResultScreen('UPLOAD', [{text:'Usage: UPLOAD <name> [DATASET | REXX | JCL | TEXT | PANEL]'}, {text:'The kind is only needed the first time, to create something new;'}, {text:'uploading into an existing member/dataset overwrites it in place.'}]);
+    return;
+  }
+  let kind, type;
+  if(MEMBERS[name]){ kind = 'member'; type = MEMBERS[name].type; }
+  else if(DATASETS[name]){ kind = 'dataset'; }
+  else {
+    const hint = (kindHint||'').toUpperCase();
+    if(hint==='DATASET' || hint==='DS' || hint==='PS'){ kind = 'dataset'; }
+    else if(['REXX','JCL','TEXT','PANEL'].includes(hint)){ kind = 'member'; type = hint; }
+    else {
+      appendResultScreen('UPLOAD', [
+        {text: name + ' doesn\'t exist yet -- say what to create it as:'},
+        {text: 'UPLOAD ' + name + ' DATASET'},
+        {text: 'UPLOAD ' + name + ' REXX   (or JCL / TEXT / PANEL)'},
+      ]);
+      return;
+    }
+  }
+  PENDING_UPLOAD = {name, kind, type};
+  uploadFileInput.click();
+}
+uploadFileInput.addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if(!file || !PENDING_UPLOAD) return;
+  const pending = PENDING_UPLOAD; PENDING_UPLOAD = null;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const text = String(reader.result).replace(/\r\n/g, '\n');
+    if(pending.kind === 'editarea'){
+      editArea.value = text;
+      const prev = cmdInput.placeholder;
+      cmdInput.placeholder = 'Loaded ' + file.name + ' into the editor -- PF3 to save';
+      setTimeout(() => { if(cmdInput.placeholder.startsWith('Loaded ')) cmdInput.placeholder = prev; }, 2500);
+      return;
+    }
+    if(pending.kind === 'dataset'){
+      DATASETS[pending.name] = {records: text.split('\n')};
+      saveDatasets();
+      logActivity('UPLOAD', pending.name + ' -> dataset');
+      appendResultScreen('UPLOAD', [{text: file.name + ' loaded into dataset ' + pending.name + ' (' + DATASETS[pending.name].records.length + ' records).', cls:'green'}]);
+      return;
+    }
+    MEMBERS[pending.name] = {type: pending.type, content: text};
+    saveMembers();
+    logActivity('UPLOAD', pending.name + ' -> member (' + pending.type + ')');
+    appendResultScreen('UPLOAD', [{text: file.name + ' loaded into member ' + pending.name + ' (' + pending.type + ').', cls:'green'}]);
+  };
+  reader.onerror = () => appendResultScreen('UPLOAD FAILED', [{text:'Could not read ' + file.name, cls:'red'}]);
+  reader.readAsText(file);
+});
+downloadBtn.onclick = () => { cmdInput.value = 'DOWNLOAD '; cmdInput.focus(); };
+uploadBtn.onclick = () => { cmdInput.value = 'UPLOAD '; cmdInput.focus(); };
+
+// =====================================================================
+// ------------------------------ RENDER --------------------------------
+// =====================================================================
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function line(text, cls){ return '<div' + (cls? ' class="'+cls+'"':'') + '>' + (esc(text)||'&nbsp;') + '</div>'; }
+function setScreen(html){ screenEl.innerHTML = html; screenEl.scrollTop = 0; }
+function setPF(keys){
+  pfbar.innerHTML = '';
+  keys.forEach(k=>{
+    const b=document.createElement('button');
+    b.className='pfkey'; b.textContent = k.label;
+    b.onclick = ()=>{ handleCommand(k.cmd); };
+    pfbar.appendChild(b);
+  });
+}
+function updateHeader(){
+  const folderTag = DIR_HANDLE ? ('[FOLDER: ' + DIR_HANDLE.name + ']') : '[BROWSER STORAGE]';
+  hdrRight.textContent = folderTag + '  ' + STATE.userid + '  ' + new Date().toTimeString().slice(0,8);
+}
+setInterval(updateHeader, 1000);
+
+// =====================================================================
+// ---------------------------- SCREENS ---------------------------------
+// =====================================================================
+function showLogon(){
+  STATE.screen='logon';
+  let h='';
+  h+=line('','');
+  h+=line('                         z / O S   T S O / E   L O G O N','white');
+  h+=line('','');
+  h+=line('  Not a Licensed Material - Property developed by "Abhishek"','dim');
+  h+=line('  NO COPYRIGHT Exits - SIMULATED MAINFRAME','dim');
+  h+=line('','');
+  h+=line('  USERID   ===> MFUSER','amber');
+  h+=line('  PASSWORD ===> ********       (not checked - demo mode)','amber');
+  h+=line('  PROCEDURE===> ISPFPROC','amber');
+  h+=line('','');
+  h+=line('  Enter LOGON to continue, or type HELP for an overview.','blue');
+  h+=line('','');
+  if(DIR_HANDLE){
+    h+=line('  STORAGE: connected to folder "' + DIR_HANDLE.name + '" - saving real files there.','green');
+  } else if(PENDING_RECONNECT_HANDLE){
+    h+=line('  STORAGE: this browser was connected to folder "' + PENDING_RECONNECT_NAME + '" before.','amber');
+    h+=line('  Type RECONNECT to restore access to it (one click, browser security).','amber');
+  } else if(FSA_SUPPORTED){
+    h+=line('  STORAGE: browser local storage only. Type CONNECT to pick a real folder','dim');
+    h+=line('  on disk instead - see SETTINGS (option 0) once logged on for details.','dim');
+  } else {
+    h+=line('  STORAGE: browser local storage (this browser only supports that mode).','dim');
+  }
+  h+=line('','');
+  h+=line('  Simulated 3270/TSO/ISPF environment: real REXX interpreter,','dim');
+  h+=line('  a JCL/JES batch simulator (IEBGENER, IDCAMS, SORT, IKJEFT01),','dim');
+  h+=line('  a dataset catalog, and ADDRESS TSO / EXECIO from REXX.','dim');
+  setScreen(h);
+  setPF([{label:'ENTER = LOGON', cmd:'LOGON'},{label:'HELP', cmd:'HELP'}, DIR_HANDLE? {label:'DISCONNECT', cmd:'DISCONNECT'} : (PENDING_RECONNECT_HANDLE? {label:'RECONNECT', cmd:'RECONNECT'} : {label:'CONNECT FOLDER', cmd:'CONNECT'})]);
+  cmdInput.placeholder='Type LOGON and press Enter...';
+}
+
+function showPrimaryMenu(){
+  STATE.screen='menu';
+  let h='';
+  h+=line('MFUSER1   -------------  ISPF PRIMARY OPTION MENU  -------------','white');
+  h+=line('OPTION ===>','amber');
+  h+=line('','');
+  h+=line('  0  SETTINGS     - Terminal / user parameters','green');
+  h+=line('  1  LIBRARY      - Browse your PDS (REXX execs, JCL, text members)','green');
+  h+=line('  2  EDIT         - Edit or create a member','green');
+  h+=line('  3  RUN REXX     - Execute a REXX exec directly (like TSO EXEC)','green');
+  h+=line('  4  SUBMIT JCL   - Submit a JCL member as a batch job','green');
+  h+=line('  5  SDSF         - View the job queue and job logs','green');
+  h+=line('  6  DATASETS     - Browse/allocate/edit cataloged datasets (PS)','green');
+  h+=line('  7  DB2          - SPUFI: run ad-hoc SQL against DB2 tables','green');
+  h+=line('  8  COMMAND      - TSO-style command line','green');
+  h+=line('  9  PANELS       - Build and run your own ISPF-style panels/tools','green');
+  h+=line('  X  EXIT         - Log off','green');
+  h+=line('','');
+  h+=line('  Type an option number/letter at OPTION ===> and press Enter,','dim');
+  h+=line('  or type a command directly (EX HELLO, SUBMIT PIPELINE, LIST).','dim');
+  h+=line('  EXPORT / IMPORT work from anywhere - see option 0 for details.','dim');
+  h+=line('  LOG shows what you\'ve done this session/persisted across restarts.','dim');
+  setScreen(h);
+  setPF([
+    {label:'PF1 LIBRARY', cmd:'1'},{label:'PF2 EDIT', cmd:'2'},{label:'PF3 RUN REXX', cmd:'3'},
+    {label:'PF4 SUBMIT', cmd:'4'},{label:'PF5 SDSF', cmd:'5'},{label:'PF6 DATASETS', cmd:'6'},
+    {label:'PF7 DB2', cmd:'7'},{label:'PF8 CMD', cmd:'8'},{label:'PF9 PANELS', cmd:'9'},{label:'PF12 EXIT', cmd:'X'}
+  ]);
+  cmdInput.placeholder='Option ===>';
+}
+
+function showLibrary(){
+  STATE.screen='library';
+  let h='';
+  h+=line('MFUSER.EXEC.LIBRARY   ---------  MEMBER LIST  ---------','white');
+  h+=line('COMMAND ===>                                    ROW 1 TO ' + Object.keys(MEMBERS).length,'amber');
+  h+=line('','');
+  h+=line('  NAME        TYPE    LINES   ACTION','dim');
+  const names = Object.keys(MEMBERS).sort();
+  if(names.length===0) h+=line('  (empty - use EDIT to create a member)','dim');
+  names.forEach(nm=>{
+    const m = MEMBERS[nm];
+    const lines = m.content.split('\n').length;
+    h += line('  ' + nm.padEnd(12) + m.type.padEnd(8) + String(lines).padEnd(8) + (m.type==='REXX'?'(EX to run)':m.type==='JCL'?'(SUB to submit)':m.type==='PANEL'?'(see option 9, PANELS)':''), 'green');
+  });
+  h+=line('','');
+  h+=line('  Commands: E name (edit)   EX name (run REXX)   SUB name (submit JCL)','blue');
+  h+=line('            DEL name (delete)   NEW name TYPE (create; TYPE=REXX/JCL/TEXT/PANEL)','blue');
+  h+=line('            DOWNLOAD name (save to a local .txt)   UPLOAD name (load a local .txt)','blue');
+  h+=line('            M (main menu)','blue');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'},{label:'PF12 MENU', cmd:'M'}]);
+  cmdInput.placeholder='Command ===>';
+}
+
+function showEditor(name, isNew, store, suggestedType){
+  store = store || 'members';
+  STATE.screen='edit';
+  STATE.currentMember = name;
+  STATE.editStore = store;
+  let content, typeLabel;
+  if(store==='members'){
+    const defaultContent = suggestedType==='JCL'
+      ? '//'+name.padEnd(8)+' JOB (ACCT),\'JOB\',CLASS=A,MSGCLASS=X\n//*\n//STEP1    EXEC PGM=IEFBR14\n//'
+      : suggestedType==='PANEL' ? PANEL_TEMPLATE
+      : '/* REXX ' + '*'.repeat(40) + '*/\nSAY \'HELLO\'\nEXIT 0';
+    const m = MEMBERS[name] || {type: suggestedType||'REXX', content: defaultContent};
+    if(isNew) MEMBERS[name] = m;
+    content = m.content; typeLabel = m.type;
+  } else {
+    const d = DATASETS[name] || {records: []};
+    if(isNew) DATASETS[name] = d;
+    content = d.records.join('\n'); typeLabel = 'PS (SEQUENTIAL)';
+  }
+  let h='';
+  h+=line('EDIT       ' + name + '   (' + typeLabel + ')' + (isNew? '  -- NEW --':''),'white');
+  h+=line('COMMAND ===>                                                     SCROLL ===> CSR','amber');
+  setScreen(h);
+  editArea.style.display='block';
+  editArea.value = content;
+  editArea.focus();
+  setPF([
+    {label:'PF3 SAVE+EXIT', cmd:'__SAVE_EXIT__'},
+    {label:'PF5 SAVE+RUN', cmd:'__SAVE_RUN__'},
+    {label:'PF12 CANCEL', cmd:'__CANCEL__'}
+  ]);
+  cmdInput.placeholder='PF3=Save & Exit   PF5=Save & Run   PF12=Cancel (typed here also works)';
+}
+function hideEditorUI(){ editArea.style.display='none'; }
+
+function showRunRexxPrompt(){
+  STATE.screen='runrexx';
+  let h='';
+  h+=line('RUN REXX EXEC','white');
+  h+=line('COMMAND ===>','amber');
+  h+=line('','');
+  const rexxMembers = Object.keys(MEMBERS).filter(n=>MEMBERS[n].type==='REXX').sort();
+  h+=line('  Available REXX members:','dim');
+  rexxMembers.forEach(n=>h+=line('    ' + n, 'green'));
+  h+=line('','');
+  h+=line('  Type:  EX <member> [arguments...]','blue');
+  h+=line('  e.g.   EX SUMNUM 25','blue');
+  h+=line('  e.g.   EX READFILE      (uses ADDRESS TSO / EXECIO)','blue');
+  h+=line('','');
+  h+=line('  M = main menu','dim');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='EX <member> [args]';
+}
+
+function showSubmitPrompt(){
+  STATE.screen='submit';
+  let h='';
+  h+=line('SUBMIT JCL JOB','white');
+  h+=line('COMMAND ===>','amber');
+  h+=line('','');
+  const jclMembers = Object.keys(MEMBERS).filter(n=>MEMBERS[n].type==='JCL').sort();
+  h+=line('  Available JCL members:','dim');
+  jclMembers.forEach(n=>h+=line('    ' + n, 'green'));
+  h+=line('','');
+  h+=line('  Type:  SUB <member>','blue');
+  h+=line('  e.g.   SUB PIPELINE     (IEBGENER + SORT + REXX, chained via datasets)','blue');
+  h+=line('','');
+  h+=line('  M = main menu','dim');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='SUB <member>';
+}
+
+function showSDSF(){
+  STATE.screen='sdsf';
+  STATE.sdsfDetailIdx = null;
+  let h='';
+  h+=line('SDSF  ---------------------  JOB QUEUE  ---------------------','white');
+  h+=line('COMMAND ===>','amber');
+  h+=line('','');
+  h+=line('  JOBNAME     JOBID     OWNER    RC     STATUS','dim');
+  if(STATE.jobs.length===0){
+    h+=line('  No jobs submitted yet this session. Use option 4 (SUBMIT JCL).','dim');
+  } else {
+    STATE.jobs.forEach((j,idx)=>{
+      const rcStr = j.rc===null? '----' : String(j.rc).padStart(4,'0');
+      h += line('  ' + String(idx+1).padStart(2,'0') + ' ' + j.name.padEnd(11) + j.jobid.padEnd(10) + STATE.userid.padEnd(9) + rcStr.padEnd(7) + (j.rc>0?'RC>0 - CHECK LOG':'ENDED - CC 0000'), j.rc>0?'amber':'green');
+    });
+  }
+  h+=line('','');
+  h+=line('  Commands: S n  (show job log for row n)     M (main menu)','blue');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='S <n> to view a job log, or M for menu';
+}
+
+function showSDSFDetail(idx){
+  const j = STATE.jobs[idx];
+  if(!j){ showSDSF(); return; }
+  STATE.screen='sdsf';
+  STATE.sdsfDetailIdx = idx;
+  let h='';
+  h+=line('SDSF  ------------  JOB LOG: ' + j.name + ' (' + j.jobid + ')  ------------','white');
+  h+=line('COMMAND ===>','amber');
+  h+=line('','');
+  j.log.forEach(l=>h+=line(l.text, l.cls||'green'));
+  h+=line('','');
+  h+=line('  Q = back to job queue     M = main menu','blue');
+  setScreen(h);
+  setPF([{label:'PF3 QUEUE', cmd:'Q'},{label:'PF12 MENU', cmd:'M'}]);
+  cmdInput.placeholder='Q for queue, M for menu';
+}
+
+function showDatasets(){
+  STATE.screen='datasets';
+  let h='';
+  h+=line('DATASET CATALOG   ---------  MFUSER  ---------','white');
+  h+=line('COMMAND ===>                                    ROW 1 TO ' + Object.keys(DATASETS).length,'amber');
+  h+=line('','');
+  h+=line('  DSNAME                          TYPE  RECORDS','dim');
+  const names = Object.keys(DATASETS).sort();
+  if(names.length===0) h+=line('  (catalog is empty - use ALLOC to create a dataset)','dim');
+  names.forEach(nm=>{
+    h += line('  ' + nm.padEnd(32) + 'PS    ' + DATASETS[nm].records.length, 'green');
+  });
+  h+=line('','');
+  h+=line('  Commands: ALLOC dsn   BROWSE dsn   EDIT dsn   DEL dsn','blue');
+  h+=line('            DOWNLOAD dsn (save to a local .txt)   UPLOAD dsn (load a local .txt)','blue');
+  h+=line('            M (main menu)','blue');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='Command ===>';
+}
+
+function showBrowseDataset(name){
+  const d = DATASETS[name];
+  if(!d){ appendResultScreen('BROWSE', [{text:'Dataset not found: ' + name}]); return; }
+  let h='';
+  h+=line('BROWSE     ' + name + '   (' + d.records.length + ' records)','white');
+  h+=line('COMMAND ===>','amber');
+  h+=line('','');
+  if(d.records.length===0) h+=line('  (empty dataset)','dim');
+  d.records.forEach((r,i)=>h+=line(String(i+1).padStart(6) + '  ' + r,'green'));
+  h+=line('','');
+  h+=line('  M = main menu   (this is read-only; use EDIT to change it)','dim');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  STATE.screen='result';
+  cmdInput.placeholder='Command ===>';
+}
+
+function showSPUFI(resultLines){
+  STATE.screen='spufi';
+  let h='';
+  h+=line('DB2I  ------------------  SPUFI (AD-HOC SQL)  ------------------','white');
+  h+=line('SQL ===>','amber');
+  h+=line('','');
+  const names = Object.keys(TABLES).sort();
+  h+=line('  Tables: ' + (names.length? names.map(n=>n+'('+TABLES[n].rows.length+')').join('  ') : '(none - CREATE TABLE to add one)'), 'dim');
+  h+=line('','');
+  if(resultLines){
+    resultLines.forEach(l=>h+=line(l.text!==undefined? l.text : l, l.cls||'green'));
+    h+=line('','');
+  } else {
+    h+=line('  Type any SQL statement and press Enter:','blue');
+    h+=line('    SELECT * FROM EMP','blue');
+    h+=line('    SELECT NAME, SALARY FROM EMP WHERE DEPT = \'D01\' ORDER BY SALARY DESC','blue');
+    h+=line('    INSERT INTO EMP (EMPNO,NAME,DEPT,SALARY) VALUES (99,\'ZOE\',\'D03\',49000)','blue');
+    h+=line('    UPDATE EMP SET SALARY = SALARY * 1.1 WHERE DEPT = \'D02\'','blue');
+    h+=line('    CREATE TABLE T1 (COL1 INTEGER, COL2 CHAR(10))','blue');
+    h+=line('','');
+    h+=line('  M = main menu','dim');
+  }
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='SQL ===>';
+}
+function formatSqlResult(res){
+  let lines=[];
+  lines.push({text:'SQLCODE = ' + res.sqlcode + '   ' + res.message, cls: res.sqlcode<0?'red':(res.sqlcode>0?'amber':'green')});
+  if(res.rows && res.rows.length){
+    lines.push({text:''});
+    const widths = res.columns.map(c=>Math.max(c.length, ...res.rows.map(r=>String(r[c]).length)));
+    lines.push({text: res.columns.map((c,i)=>c.padEnd(widths[i])).join('  '), cls:'white'});
+    lines.push({text: widths.map(w=>'-'.repeat(w)).join('  '), cls:'dim'});
+    res.rows.forEach(r=> lines.push({text: res.columns.map((c,i)=>String(r[c]).padEnd(widths[i])).join('  ')}));
+  }
+  return lines;
+}
+
+function showCommandScreen(){
+  STATE.screen='command';
+  let h='';
+  h+=line('TSO COMMAND LINE','white');
+  h+=line('','');
+  h+=line('  EX name [args]     - run a REXX exec','green');
+  h+=line('  SUBMIT name        - submit a JCL member (also: SUB)','green');
+  h+=line('  LIST / LIBRARY     - list exec-library members','green');
+  h+=line('  EDIT name          - edit/create a member','green');
+  h+=line('  DEL name           - delete a member','green');
+  h+=line('  NEW name TYPE      - create empty member (TYPE=REXX/JCL/TEXT)','green');
+  h+=line('  SDSF               - view job queue','green');
+  h+=line('  DATASETS / LISTCAT - view dataset catalog','green');
+  h+=line('  ALLOC dsn          - allocate a new empty dataset','green');
+  h+=line('  BROWSE dsn         - view dataset contents','green');
+  h+=line('  DELDS dsn          - delete a dataset','green');
+  h+=line('  DB2 / SPUFI        - ad-hoc SQL against DB2 tables','green');
+  h+=line('  SQL <statement>    - run one SQL statement right here','green');
+  h+=line('  PANELS             - build/run your own ISPF-style panels (option 9)','green');
+  h+=line('  F / FIND text      - find text on screen (or in the editor)','green');
+  h+=line('                       repeat with bare F, or click PF5 NEXT once it appears','green');
+  h+=line('  DOWNLOAD name      - save a member/dataset to a local .txt file (pick where)','green');
+  h+=line('  UPLOAD name [TYPE] - load a local .txt file into a member/dataset','green');
+  h+=line('  LOG [filter]       - view the persistent activity log of what you\'ve done','green');
+  h+=line('  EXPORT             - download your whole session as a .json file','green');
+  h+=line('  IMPORT             - load a session .json file (use on any laptop)','green');
+  h+=line('  CONNECT            - pick a real folder on disk to save to (Chrome/Edge)','green');
+  h+=line('  DISCONNECT         - stop saving to the connected folder','green');
+  h+=line('  RECONNECT          - restore access to a previously connected folder','green');
+  h+=line('  HELP               - this help','green');
+  h+=line('  M                  - main menu','green');
+  h+=line('  LOGOFF             - end session','green');
+  h+=line('','');
+  h+=line('  Type a command below and press Enter.','blue');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='Command ===>';
+}
+
+function appendResultScreen(title, bodyLines){
+  let h='';
+  h+=line(title,'white');
+  h+=line('','');
+  bodyLines.forEach(l=>h+=line(l.text!==undefined? l.text : l, l.cls||'green'));
+  h+=line('','');
+  h+=line('  Press Enter or type M for the main menu.','dim');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'}]);
+  cmdInput.placeholder='Command ===>';
+  STATE.screen='result';
+}
+
+// =====================================================================
+// --------------------------- ISPF PANELS --------------------------------
+// A real (subset) ISPF Dialog Manager: panels are members of type PANEL,
+// authored with the same )ATTR/)BODY/)INIT/)PROC/)END section structure
+// as genuine ISPF panels, edited in the same member editor as REXX/JCL.
+// _NAME(len) is an input field, #NAME(len) is a protected/output field,
+// %word is a styled label -- all bound to a single shared ISPF variable
+// pool (ISPF_POOL), just like real ISPF's screen variable pool. )INIT
+// seeds defaults for unset pool variables; )PROC runs on ENTER (VER()
+// validation, simple assignment, IF..THEN..=, and an optional &ZSEL
+// assignment that chains straight into another command, exec, or panel --
+// the same pattern real ISPF selection panels use for their menus.
+// =====================================================================
+function parsePanelBodyLine(line){
+  const segs=[]; let i=0; const n=line.length;
+  const sigilRe = /^([_#%])([A-Za-z_][A-Za-z0-9_]*)(?:\((\d+)\))?/;
+  while(i<n){
+    const c=line[i];
+    if((c==='_'||c==='#'||c==='%') && /[A-Za-z_]/.test(line[i+1]||'')){
+      const mm = line.slice(i).match(sigilRe);
+      if(mm){
+        const sigil=mm[1], name=mm[2].toUpperCase(), len=mm[3]?parseInt(mm[3],10):null;
+        if(sigil==='_') segs.push({type:'input', name, len: len||Math.max(8,name.length)});
+        else if(sigil==='#') segs.push({type:'protected', name, len: len||Math.max(8,name.length)});
+        else segs.push({type:'label', text: mm[2]});
+        i += mm[0].length;
+        continue;
+      }
+    }
+    let j=i+1;
+    while(j<n){ const cj=line[j]; if((cj==='_'||cj==='#'||cj==='%') && /[A-Za-z_]/.test(line[j+1]||'')) break; j++; }
+    segs.push({type:'text', text: line.slice(i,j)});
+    i=j;
+  }
+  return segs;
+}
+function parsePanelStmts(lines){
+  const stmts=[];
+  for(let i=0;i<lines.length;i++){
+    const t = lines[i].trim();
+    if(!t || t.startsWith('*')) continue;
+    let m;
+    m = t.match(/^VER\s*\(\s*&?([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([A-Za-z]+)\s*\)\s*$/i);
+    if(m){ stmts.push({type:'ver', name:m[1].toUpperCase(), rule:m[2].toUpperCase()}); continue; }
+    m = t.match(/^IF\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'([^']*)'\s+THEN\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/i);
+    if(m){
+      const stmt = {type:'ifassign', condName:m[1].toUpperCase(), condVal:m[2], name:m[3].toUpperCase(), valueExpr:m[4].trim(), elseName:null, elseExpr:null};
+      const next = (lines[i+1]||'').trim();
+      const em = next.match(/^ELSE\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/i);
+      if(em){ stmt.elseName = em[1].toUpperCase(); stmt.elseExpr = em[2].trim(); i++; }
+      stmts.push(stmt);
+      continue;
+    }
+    m = t.match(/^&?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
+    if(m){ stmts.push({type:'assign', name:m[1].toUpperCase(), valueExpr:m[2].trim()}); continue; }
+  }
+  return stmts;
+}
+function parsePanel(source){
+  const lines = source.replace(/\r\n/g,'\n').split('\n');
+  const sections = {ATTR:[], BODY:[], INIT:[], PROC:[]};
+  let cur=null;
+  for(const raw of lines){
+    const t = raw.trim();
+    const secMatch = t.match(/^\)(ATTR|BODY|INIT|PROC|END)\b/i);
+    if(secMatch){ const s=secMatch[1].toUpperCase(); cur = s==='END'? null : s; continue; }
+    if(cur && sections[cur]) sections[cur].push(raw);
+  }
+  return {
+    body: sections.BODY.map(parsePanelBodyLine),
+    initStmts: parsePanelStmts(sections.INIT),
+    procStmts: parsePanelStmts(sections.PROC),
+  };
+}
+function resolvePanelExpr(expr, pool){
+  expr = expr.trim();
+  const qm = expr.match(/^'(.*)'$/);
+  if(qm) return qm[1].replace(/''/g,"'");
+  if(expr.startsWith('&')) return pool[expr.slice(1).toUpperCase()] || '';
+  return expr;
+}
+function runPanelStmts(stmts, pool, opts){
+  opts = opts || {};
+  let msg=null;
+  for(const st of stmts){
+    if(st.type==='assign'){
+      if(opts.onlyIfUnset){ if(pool[st.name]===undefined || pool[st.name]==='') pool[st.name]=resolvePanelExpr(st.valueExpr,pool); }
+      else pool[st.name]=resolvePanelExpr(st.valueExpr,pool);
+    } else if(st.type==='ifassign'){
+      if(String(pool[st.condName]||'')===st.condVal) pool[st.name]=resolvePanelExpr(st.valueExpr,pool);
+      else if(st.elseName) pool[st.elseName]=resolvePanelExpr(st.elseExpr,pool);
+    } else if(st.type==='ver'){
+      const val = pool[st.name]!==undefined? String(pool[st.name]):'';
+      if(st.rule==='NB' && val.trim()===''){ msg = st.name + ' must not be blank.'; break; }
+      if(st.rule==='NUM' && (val.trim()===''||isNaN(Number(val)))){ msg = st.name + ' must be numeric.'; break; }
+    }
+  }
+  return {msg};
+}
+function renderPanelRowPlain(segs){
+  return segs.map(s=>{
+    if(s.type==='text') return s.text;
+    if(s.type==='label') return s.text;
+    if(s.type==='input' || s.type==='protected'){
+      const v = ISPF_POOL[s.name]!==undefined? String(ISPF_POOL[s.name]) : '';
+      return v.padEnd(s.len);
+    }
+    return '';
+  }).join('');
+}
+
+let PANEL_RUNTIME = null; // {panelName, parsed} for the panel currently on screen
+let PANEL_STACK = []; // names of caller panels, so PF3/CANCEL returns to whoever chained here via &ZSEL, like real ISPF
+
+function showPanelsList(){
+  STATE.screen='panels';
+  PANEL_STACK = []; // reaching the PANELS list directly (not via a PF3 pop) resets any nesting
+  let h='';
+  h+=line('MFUSER.PANEL.LIBRARY   ---------  ISPF PANELS  ---------','white');
+  h+=line('COMMAND ===>                                    ROW 1 TO ' + Object.keys(MEMBERS).filter(n=>MEMBERS[n].type==='PANEL').length,'amber');
+  h+=line('','');
+  h+=line('  NAME        LINES   ACTION','dim');
+  const names = Object.keys(MEMBERS).filter(n=>MEMBERS[n].type==='PANEL').sort();
+  if(names.length===0) h+=line('  (no panels yet - use NEW name PANEL to build one)','dim');
+  names.forEach(nm=>{
+    const lines = MEMBERS[nm].content.split('\n').length;
+    h += line('  ' + nm.padEnd(12) + String(lines).padEnd(8) + '(R to run)', 'green');
+  });
+  h+=line('','');
+  h+=line('  Commands: R name (run the panel)   E name (edit panel source)','blue');
+  h+=line('            NEW name PANEL (create)   DEL name (delete)','blue');
+  h+=line('            POOL (inspect the shared ISPF variable pool)','blue');
+  h+=line('            TABLES (inspect ISPF tables built via ADDRESS ISPEXEC TB*)   M (main menu)','blue');
+  setScreen(h);
+  setPF([{label:'PF3 MENU', cmd:'M'},{label:'PF12 MENU', cmd:'M'}]);
+  cmdInput.placeholder='R <panel> to run, E <panel> to edit, or NEW <name> PANEL';
+}
+
+function showPoolInspector(){
+  const names = Object.keys(ISPF_POOL).sort();
+  const bodyLines = names.length
+    ? names.map(n=>({text:'  ' + n.padEnd(20) + ' = ' + String(ISPF_POOL[n])}))
+    : [{text:'(empty - run a panel, or ADDRESS ISPEXEC VPUT from REXX, to populate it)'}];
+  appendResultScreen('ISPF VARIABLE POOL', bodyLines);
+}
+
+function showTablesInspector(){
+  const names = Object.keys(ISPF_TABLES).sort();
+  const bodyLines = [];
+  if(names.length===0){
+    bodyLines.push({text:'(no tables yet - ADDRESS ISPEXEC TBCREATE from a REXX exec)'});
+  } else {
+    names.forEach(nm=>{
+      const t = ISPF_TABLES[nm];
+      bodyLines.push({text: nm + '  KEYS(' + t.keys.join(' ') + ')  NAMES(' + t.names.join(' ') + ')  ' + t.rows.length + ' row(s)', cls:'white'});
+      const cols = t.keys.concat(t.names);
+      t.rows.forEach((r,i)=> bodyLines.push({text: '  ' + String(i+1).padStart(3) + '  ' + cols.map(c=>c+'='+r[c]).join('  ')}));
+      bodyLines.push({text:''});
+    });
+  }
+  appendResultScreen('ISPF TABLES', bodyLines);
+}
+
+function showPanelRun(panelName, opts){
+  const mem = MEMBERS[panelName];
+  if(!mem || mem.type!=='PANEL'){ appendResultScreen('PANEL', [{text:'Panel not found: ' + panelName}]); return; }
+  let parsed;
+  try{ parsed = parsePanel(mem.content); }
+  catch(e){ appendResultScreen('PANEL ERROR', [{text:'Could not parse panel ' + panelName + ': ' + e.message, cls:'red'}]); return; }
+  // If another panel is already active and this isn't a stack pop (PF3
+  // returning to a caller), remember it so PF3 from the new panel comes
+  // back here -- the same nesting real ISPF gets from chained DISPLAYs.
+  if(PANEL_RUNTIME && !(opts && opts.isPop)) PANEL_STACK.push(PANEL_RUNTIME.panelName);
+  runPanelStmts(parsed.initStmts, ISPF_POOL, {onlyIfUnset:true});
+  PANEL_RUNTIME = {panelName, parsed};
+  STATE.screen='panelrun';
+  STATE.panelMsg = null;
+  logActivity('PANEL DISPLAY', panelName);
+  renderPanelScreen();
+}
+
+function renderPanelScreen(){
+  const {panelName, parsed} = PANEL_RUNTIME;
+  let h='';
+  h += line(panelName + '  ' + '-'.repeat(Math.max(0,50-panelName.length)) + '  ISPF PANEL','white');
+  if(STATE.panelMsg) h += line('  *** ' + STATE.panelMsg + ' ***','red');
+  h += line('','');
+  const inputNames=[];
+  parsed.body.forEach(segs=>{
+    let rowHtml='';
+    segs.forEach(s=>{
+      if(s.type==='text') rowHtml += esc(s.text);
+      else if(s.type==='label') rowHtml += '<span class="white">'+esc(s.text)+'</span>';
+      else if(s.type==='protected'){
+        const v = ISPF_POOL[s.name]!==undefined? String(ISPF_POOL[s.name]):'';
+        rowHtml += '<span class="blue">'+esc(v.padEnd(s.len))+'</span>';
+      } else if(s.type==='input'){
+        inputNames.push(s.name);
+        const v = ISPF_POOL[s.name]!==undefined? String(ISPF_POOL[s.name]):'';
+        rowHtml += '<input type="text" id="ispf_f_'+esc(s.name)+'" data-fld="'+esc(s.name)+'" maxlength="'+s.len+'" size="'+s.len+'" value="'+esc(v)+'" class="ispf-field" autocomplete="off" spellcheck="false">';
+      }
+    });
+    h += '<div>' + (rowHtml || '&nbsp;') + '</div>';
+  });
+  setScreen(h);
+  inputNames.forEach((nm,idx)=>{
+    const el = document.getElementById('ispf_f_'+nm);
+    if(!el) return;
+    el.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); submitPanel(); } });
+    if(idx===0) setTimeout(()=>el.focus(), 0);
+  });
+  setPF([{label:'ENTER', cmd:'__PANEL_ENTER__'},{label:'PF3 CANCEL', cmd:'__PANEL_CANCEL__'},{label:'PF12 CANCEL', cmd:'__PANEL_CANCEL__'}]);
+  cmdInput.placeholder='ENTER to submit, PF3/PF12 to cancel (Tab moves between fields)';
+}
+function collectPanelFieldValues(){
+  PANEL_RUNTIME.parsed.body.forEach(segs=>segs.forEach(s=>{
+    if(s.type==='input'){
+      const el = document.getElementById('ispf_f_'+s.name);
+      if(el) ISPF_POOL[s.name] = el.value;
+    }
+  }));
+}
+function submitPanel(){
+  if(!PANEL_RUNTIME) return;
+  collectPanelFieldValues();
+  const {panelName, parsed} = PANEL_RUNTIME;
+  const res = runPanelStmts(parsed.procStmts, ISPF_POOL, {});
+  if(res.msg){ STATE.panelMsg = res.msg; renderPanelScreen(); return; }
+  STATE.panelMsg = null;
+  saveState();
+  logActivity('PANEL SUBMIT', panelName);
+  const zsel = ISPF_POOL['ZSEL'];
+  if(zsel){
+    delete ISPF_POOL['ZSEL'];
+    saveState();
+    const zselVerb = zsel.trim().split(/\s+/)[0].toUpperCase();
+    // Only remember this panel as "caller" when chaining to another panel
+    // -- pushing it for an EX/SUB target would leave a stale stack entry
+    // that later, unrelated panel cancels could wrongly "return" to. Push
+    // before nulling PANEL_RUNTIME (showPanelRun's own auto-push needs it
+    // set to detect nesting, but by the time it runs here it's already
+    // gone, so this transition has to record it manually).
+    if(zselVerb==='R') PANEL_STACK.push(panelName);
+    PANEL_RUNTIME = null;
+    // Leave 'panelrun' first, or the chained command re-enters the panel
+    // guard and is dropped. Route to whichever screen actually recognizes
+    // the ZSEL command's verb -- "R panelname" only works from 'panels',
+    // everything else (EX/SUB/...) works from 'menu'.
+    STATE.screen = (zselVerb==='R') ? 'panels' : 'menu';
+    handleCommand(zsel);
+    return;
+  }
+  PANEL_RUNTIME = null;
+  if(PANEL_STACK.length){ showPanelRun(PANEL_STACK.pop(), {isPop:true}); return; }
+  appendResultScreen('PANEL ' + panelName + ' SUBMITTED', [
+    {text:'Field values captured into the shared ISPF variable pool.'},
+    {text:'Type POOL from the PANELS option to inspect them.'},
+  ]);
+}
+function cancelPanel(){
+  logActivity('PANEL CANCEL', PANEL_RUNTIME? PANEL_RUNTIME.panelName : '');
+  PANEL_RUNTIME = null;
+  if(PANEL_STACK.length){ showPanelRun(PANEL_STACK.pop(), {isPop:true}); return; }
+  showPanelsList();
+}
+
+const PANEL_TEMPLATE =
+`)ATTR
+)BODY
+---------------------- MY PANEL ----------------------
+
+ %Name  . . . _NAME(15)
+ %Dept  . . . _DEPT(4)
+
+ %Result: #GREETING(30)
+
+)INIT
+ GREETING = 'HELLO -- FILL IN THE FIELDS ABOVE'
+)PROC
+ VER(&NAME,NB)
+ GREETING = 'HELLO, ' NAME ' FROM ' DEPT
+)END`;
+
+// =====================================================================
+// ------------------------------- FIND -----------------------------------
+// ISPF-style F/FIND <text>, usable from any screen. On the edit screen it
+// searches the textarea's contents directly; everywhere else it searches
+// the rendered screen text using the browser's native find-in-page engine
+// (window.find), which also selects the match -- so it doubles as a way
+// to land a selection for copy/paste. Repeating F/FIND with no text finds
+// the next occurrence of the last search.
+// =====================================================================
+function flashNotFound(text){
+  const prev = cmdInput.placeholder;
+  cmdInput.placeholder = 'NOT FOUND: ' + text;
+  setTimeout(()=>{ if(cmdInput.placeholder.startsWith('NOT FOUND:')) cmdInput.placeholder = prev; }, 1500);
+}
+// Real ISPF repeats a find with PF5/RFIND -- physical F5 is unreliable here
+// (Chromium reserves it for page reload, same issue as F3/F11/F12), so this
+// on-screen button is the dependable way to step through matches one by
+// one; typing a bare F/FIND with no text does the same thing.
+function updateFindNextButton(){
+  if(STATE.lastFind){
+    findNextBtn.setAttribute('data-label', 'PF5 NEXT: ' + (STATE.lastFind.length>16? STATE.lastFind.slice(0,16)+'…' : STATE.lastFind));
+    findNextBtn.style.display = '';
+  } else {
+    findNextBtn.style.display = 'none';
+  }
+}
+findNextBtn.onclick = ()=>{
+  if(!STATE.lastFind) return;
+  if(STATE.screen==='edit') findInEditArea(STATE.lastFind);
+  else doFind(STATE.lastFind);
+};
+function findInEditArea(text){
+  if(!text) return;
+  STATE.lastFind = text;
+  updateFindNextButton();
+  const ta = editArea;
+  const val = ta.value;
+  const upperVal = val.toUpperCase();
+  const upperText = text.toUpperCase();
+  const startFrom = ta.selectionEnd!=null ? ta.selectionEnd : 0;
+  let idx = upperVal.indexOf(upperText, startFrom);
+  if(idx===-1) idx = upperVal.indexOf(upperText, 0);
+  if(idx===-1){ flashNotFound(text); return; }
+  ta.focus();
+  ta.setSelectionRange(idx, idx + text.length);
+}
+function doFind(text){
+  if(!text) text = STATE.lastFind;
+  if(!text){ appendResultScreen('FIND', [{text:'Usage: F <text>  (repeats the last search if text is omitted)'}]); return; }
+  STATE.lastFind = text;
+  updateFindNextButton();
+  logActivity('FIND', text);
+  let ok = false;
+  try{ ok = !!(window.find && window.find(text, false, false, true, false, true, false)); }catch(e){ ok = false; }
+  if(!ok) flashNotFound(text);
+}
+
+// =====================================================================
+// -------------------------- ACTIVITY LOG SCREEN -------------------------
+// =====================================================================
+function showActivityLog(filterText){
+  let entries = ACTIVITY_LOG.slice().reverse();
+  if(filterText && filterText.trim()){
+    const f = filterText.trim().toUpperCase();
+    entries = entries.filter(e => (e.kind + ' ' + e.detail).toUpperCase().includes(f));
+  }
+  const shown = entries.slice(0, 60);
+  const bodyLines = shown.length
+    ? shown.map(e => ({text: e.ts.replace('T',' ').slice(0,19) + '  ' + e.kind.padEnd(14) + ' ' + e.detail}))
+    : [{text:'(no activity logged yet)'}];
+  appendResultScreen('ACTIVITY LOG' + (filterText? ' -- filter: "'+filterText+'"':'') + '  (' + shown.length + ' of ' + entries.length + ' shown, newest first)', bodyLines);
+}
+
+// =====================================================================
+// --------------------------- DATASET / TSO HOST -------------------------
+// =====================================================================
+function tsoHostCommandHandler(cmd, address, rexx){
+  const trimmed = cmd.trim();
+  const upper = trimmed.toUpperCase();
+  if(upper.startsWith('ALLOC')){
+    const dd = (trimmed.match(/DD\(([^)]+)\)/i)||[])[1];
+    const dsn = (trimmed.match(/DSN\('?([^'()]+)'?\)/i)||[])[1];
+    if(!dd || !dsn) return {rc:12, output:['IKJ56224I MISSING DD OR DSN ON ALLOC']};
+    const isNew = /\bNEW\b/i.test(trimmed);
+    if(isNew && !DATASETS[dsn]){ DATASETS[dsn] = {records:[]}; saveDatasets(); }
+    if(!DATASETS[dsn] && !isNew) return {rc:8, output:['IKJ56231I DATA SET ' + dsn + ' NOT FOUND']};
+    rexx.allocs[dd.toUpperCase()] = dsn;
+    return {rc:0, output:[]};
+  }
+  if(upper.startsWith('FREE')){
+    const dd = (trimmed.match(/DD\(([^)]+)\)/i)||[])[1];
+    if(dd) delete rexx.allocs[dd.toUpperCase()];
+    return {rc:0, output:[]};
+  }
+  if(upper.startsWith('EXECIO')){
+    const m = trimmed.match(/^EXECIO\s+(\S+)\s+(DISKR|DISKW)\s+(\S+)\s*\(\s*(.*)$/i);
+    if(!m) return {rc:20, output:['IKJ56228I INVALID EXECIO SYNTAX']};
+    const countTok=m[1], mode=m[2].toUpperCase(), dd=m[3].toUpperCase(), optsPart=m[4];
+    const stemMatch = optsPart.match(/STEM\s+(\S+)/i);
+    const dsn = rexx.allocs[dd];
+    if(!dsn || !DATASETS[dsn]) return {rc:16, output:['IKJ56231I DD ' + dd + ' NOT ALLOCATED']};
+    const ds = DATASETS[dsn];
+    const stem = (stemMatch? stemMatch[1]:'LINE').replace(/\.$/,'');
+    if(mode==='DISKR'){
+      const count = countTok==='*'? ds.records.length : parseInt(countTok,10);
+      const n = Math.min(count, ds.records.length);
+      for(let i=0;i<n;i++) rexx.vars[(stem+'.'+(i+1)).toUpperCase()] = ds.records[i];
+      rexx.vars[(stem+'.0').toUpperCase()] = n;
+    } else {
+      const total = parseInt(rexx.vars[(stem+'.0').toUpperCase()]||'0',10);
+      for(let i=1;i<=total;i++) ds.records.push(String(rexx.vars[(stem+'.'+i).toUpperCase()]||''));
+      saveDatasets();
+    }
+    return {rc:0, output:[]};
+  }
+  if(upper.startsWith('DELETE')){
+    const dsn = trimmed.split(/\s+/)[1];
+    if(dsn && DATASETS[dsn]){ delete DATASETS[dsn]; saveDatasets(); return {rc:0, output:['ENTRY ' + dsn + ' DELETED']}; }
+    return {rc:8, output:['ENTRY NOT FOUND: ' + dsn]};
+  }
+  if(upper.startsWith('LISTDS') || upper.startsWith('LISTCAT')){
+    return {rc:0, output: Object.keys(DATASETS)};
+  }
+  if(upper.startsWith('RENAME')){
+    const parts = trimmed.split(/\s+/);
+    const oldName = parts[1], newName = parts[2];
+    if(!oldName || !newName) return {rc:12, output:['IKJ56228I MISSING OLD OR NEW NAME ON RENAME']};
+    if(!DATASETS[oldName]) return {rc:8, output:['IKJ56231I DATA SET ' + oldName + ' NOT FOUND']};
+    if(DATASETS[newName]) return {rc:8, output:['IDC3012I ENTRY ' + newName + ' ALREADY EXISTS']};
+    DATASETS[newName] = DATASETS[oldName];
+    delete DATASETS[oldName];
+    saveDatasets();
+    return {rc:0, output:['ENTRY ' + oldName + ' RENAMED TO ' + newName]};
+  }
+  if(upper.startsWith('SUBMIT')){
+    // Real TSO SUBMIT takes a dataset containing JCL text; this subset
+    // submits a cataloged JCL member by name, the common REXX-driven case.
+    const name = trimmed.split(/\s+/)[1];
+    if(!name) return {rc:12, output:['IKJ56228I MISSING DATA SET NAME ON SUBMIT']};
+    const mem = MEMBERS[name.toUpperCase()];
+    if(!mem || mem.type!=='JCL') return {rc:8, output:['IKJ55044I ' + name + ' NOT FOUND OR NOT JCL']};
+    const jobRec = runJCL(name.toUpperCase());
+    return {rc:0, output:['IKJ56250I JOB ' + jobRec.jobid + '(' + jobRec.name + ') SUBMITTED'], setVars:{'LASTJOB': jobRec.jobid}};
+  }
+  if(upper.startsWith('STATUS')){
+    const name = trimmed.split(/\s+/)[1];
+    const jobs = name? STATE.jobs.filter(j=>j.name.toUpperCase()===name.toUpperCase()) : STATE.jobs;
+    if(jobs.length===0) return {rc:0, output:['IKJ58436I NO JOBS FOUND']};
+    return {rc:0, output: jobs.map(j=> j.jobid + ' ' + j.name + ' - ' + (j.rc===null? 'EXECUTING':'RC=' + j.rc))};
+  }
+  if(upper.startsWith('CANCEL')){
+    // Our jobs run synchronously and are always finished by the time
+    // control returns, so there's nothing in flight to actually cancel --
+    // acknowledged as a no-op for scripts that call it defensively.
+    return {rc:0, output:['$HASP250 CANCEL ACCEPTED (JOB ALREADY COMPLETED - THIS SIMULATOR RUNS JOBS SYNCHRONOUSLY)']};
+  }
+  if(upper.startsWith('TIME')){
+    const now = new Date();
+    return {rc:0, output:['TIME-' + now.toTimeString().slice(0,8) + '  DATE-' + now.toISOString().slice(0,10)], setVars:{'SYSTIME': now.toTimeString().slice(0,8), 'SYSDATE': now.toISOString().slice(0,10)}};
+  }
+  if(upper.startsWith('LISTALC')){
+    const dds = Object.keys(rexx.allocs);
+    if(dds.length===0) return {rc:0, output:['NO DDNAMES ALLOCATED']};
+    return {rc:0, output: dds.map(dd=> 'DDNAME-' + dd + '  DSNAME-' + rexx.allocs[dd])};
+  }
+  return {rc:12, output:['IKJ56225I UNKNOWN COMMAND: ' + cmd]};
+}
+
+function getDatasetLines(ddInfo, log){
+  if(!ddInfo) return [];
+  if(ddInfo.inline) return ddInfo.inline.map(l=>l.trim());
+  if(ddInfo.dummy) return [];
+  if(ddInfo.dsn){
+    if(DATASETS[ddInfo.dsn]) return DATASETS[ddInfo.dsn].records.slice();
+    if(log) log.push({text:'IEC141I ' + ddInfo.dsn + ' NOT FOUND IN CATALOG', cls:'amber'});
+  }
+  return [];
+}
+function ensureDataset(ddInfo){
+  if(!ddInfo || !ddInfo.dsn) return null;
+  const isMod = ddInfo.disp && ddInfo.disp.startsWith('MOD');
+  if(!DATASETS[ddInfo.dsn]) DATASETS[ddInfo.dsn] = {records:[]};
+  else if(!isMod) DATASETS[ddInfo.dsn].records = []; // NEW/OLD/SHR (or no DISP) writes from scratch; MOD appends
+  return DATASETS[ddInfo.dsn];
+}
+
+// =====================================================================
+// --------------------------- JCL PARSER ---------------------------------
+// =====================================================================
+// A JCL member whose content's first statement is "//name PROC ..." is a
+// cataloged/in-stream procedure: EXEC'ing it by name (no PGM=) inlines its
+// steps into the calling job, with &SYMBOLIC tokens replaced by whatever
+// the EXEC passed (falling back to the PROC statement's own defaults).
+function extractProcParams(paramText){
+  const params = {};
+  (paramText||'').split(',').forEach(pair=>{
+    const m = pair.trim().match(/^([A-Za-z0-9$#@]+)=(.*)$/);
+    if(m) params[m[1].toUpperCase()] = m[2].trim();
+  });
+  return params;
+}
+function substituteSymbolics(text, params){
+  return text.replace(/&([A-Za-z0-9$#@]+)/g, (whole, name) => {
+    const v = params[name.toUpperCase()];
+    return v!==undefined ? v : whole;
+  });
+}
+function parseJCL(text){
+  const lines = text.split(/\r?\n/);
+  let job = {name:null, steps:[]};
+  let curStep = null;
+  let i=0;
+  while(i<lines.length){
+    let l = lines[i];
+    if(!l.startsWith('//')){ i++; continue; }
+    if(l.startsWith('//*')){ i++; continue; }
+    if(l.trim()==='//'){ i++; continue; }
+    const m = l.match(/^\/\/(\S*)\s+(.*)$/);
+    if(!m){ i++; continue; }
+    const label = m[1];
+    let rest = m[2];
+    while(rest.trim().endsWith(',') && i+1<lines.length && lines[i+1].startsWith('//')){
+      i++;
+      const contRest = lines[i].replace(/^\/\/\s*/,'');
+      rest = rest.trim().slice(0,-1) + ' ' + contRest;
+    }
+    if(/\bJOB\b/.test(rest) && !job.name){ job.name = label; i++; continue; }
+    if(/\bEXEC\b/.test(rest)){
+      const pgmMatch = rest.match(/PGM=([A-Za-z0-9$#@]+)/);
+      const procMatch = rest.match(/EXEC\s+([A-Za-z0-9$#@]+)\b/);
+      const parmMatch = rest.match(/PARM=(?:'([^']*)'|([^,\s]+))/);
+      const condMatches = [...rest.matchAll(/COND=\(([^)]+)\)/g)];
+      const conds = condMatches.map(cm=>{ const p=cm[1].split(',').map(s=>s.trim()); return {code:parseInt(p[0],10), op:(p[1]||'EQ').toUpperCase()}; });
+      const procName = (!pgmMatch && procMatch) ? procMatch[1] : null;
+      const procMember = procName ? MEMBERS[procName.toUpperCase()] : null;
+      const procHeaderMatch = (procMember && procMember.type==='JCL') ? procMember.content.match(/^\s*\/\/\S+\s+PROC(\s+(.*))?$/m) : null;
+      if(procMember && procHeaderMatch){
+        const defaults = extractProcParams(procHeaderMatch[2]);
+        const overrides = extractProcParams(rest.replace(/EXEC\s+[A-Za-z0-9$#@]+\s*,?/,'').replace(/COND=\([^)]*\)\s*,?/,''));
+        const params = Object.assign({}, defaults, overrides);
+        const substituted = substituteSymbolics(procMember.content, params);
+        const procJob = parseJCL(substituted);
+        procJob.steps.forEach(s => job.steps.push(s));
+        curStep = procJob.steps.length ? procJob.steps[procJob.steps.length-1] : null;
+        i++; continue;
+      }
+      curStep = {
+        name: label,
+        pgm: pgmMatch? pgmMatch[1] : (procMatch && !/^PGM/.test(procMatch[1])? procMatch[1] : null),
+        parm: parmMatch? (parmMatch[1]!==undefined? parmMatch[1]:parmMatch[2]) : null,
+        cond: conds,
+        dd: {}
+      };
+      job.steps.push(curStep);
+      i++; continue;
+    }
+    if(curStep && label){
+      const isInline = /^\s*DD\s+\*\s*$/i.test(rest) || /^\s*DD\s+DATA\b/i.test(rest);
+      const dsnMatch = rest.match(/DSN=([A-Za-z0-9$#@.]+)/i);
+      const dispMatch = rest.match(/DISP=\(?([A-Za-z,]+)\)?/i);
+      const isDummy = /\bDUMMY\b/i.test(rest);
+      const ddInfo = {raw:rest, dsn: dsnMatch? dsnMatch[1].toUpperCase():null, disp: dispMatch? dispMatch[1].toUpperCase():null, dummy:isDummy, inline:null};
+      curStep.dd[label] = ddInfo;
+      if(isInline){
+        let inlineLines=[];
+        i++;
+        while(i<lines.length && !lines[i].startsWith('//') && lines[i].trim()!=='/*'){ inlineLines.push(lines[i]); i++; }
+        if(i<lines.length && lines[i].trim()==='/*') i++;
+        ddInfo.inline = inlineLines;
+        continue;
+      }
+      i++; continue;
+    }
+    i++;
+  }
+  return job;
+}
+
+// =====================================================================
+// --------------------------- JCL / STEP EXECUTION -----------------------
+// =====================================================================
+function condSaysSkip(condList, prevRC){
+  for(const c of condList){
+    const op=c.op, code=c.code;
+    let hit=false;
+    if(op==='EQ') hit = prevRC===code;
+    else if(op==='NE') hit = prevRC!==code;
+    else if(op==='GT') hit = prevRC>code;
+    else if(op==='GE') hit = prevRC>=code;
+    else if(op==='LT') hit = prevRC<code;
+    else if(op==='LE') hit = prevRC<=code;
+    if(hit) return true;
+  }
+  return false;
+}
+
+function runStep(step, jobIdStr, log){
+  const pgm = step.pgm;
+  if(!pgm){ log.push({text:'IEF212I ' + step.name + ' STEP HAS NO PGM= - SKIPPED', cls:'amber'}); return 0; }
+  log.push({text: jobIdStr + ' IEF236I ALLOC FOR ' + step.name});
+
+  if(pgm==='IEFBR14'){
+    Object.values(step.dd).forEach(dd=>{
+      if(dd.dsn && dd.disp && dd.disp.startsWith('NEW')){
+        DATASETS[dd.dsn] = DATASETS[dd.dsn] || {records:[]};
+        log.push({text: jobIdStr + ' IEF285I ' + dd.dsn + ' CATALOGED'});
+      }
+    });
+    saveDatasets();
+    log.push({text: jobIdStr + ' ' + step.name + ' EXEC PGM=IEFBR14 -- DATASET ALLOCATION ONLY'});
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0000', cls:'green'});
+    return 0;
+  }
+  if(pgm==='IEBGENER'){
+    const inLines = getDatasetLines(step.dd.SYSUT1, log);
+    const outDs = ensureDataset(step.dd.SYSUT2);
+    if(!outDs){ log.push({text: jobIdStr + ' IEF212I MISSING/INVALID SYSUT2 DD', cls:'red'}); return 12; }
+    outDs.records = outDs.records.concat(inLines);
+    saveDatasets();
+    log.push({text: jobIdStr + ' ' + step.name + ' EXEC PGM=IEBGENER -- COPIED ' + inLines.length + ' RECORDS TO ' + (step.dd.SYSUT2.dsn||'(SYSUT2)')});
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0000', cls:'green'});
+    return 0;
+  }
+  if(pgm==='SORT'){
+    const inLines = getDatasetLines(step.dd.SORTIN, log);
+    const outDs = ensureDataset(step.dd.SORTOUT);
+    const sysin = getDatasetLines(step.dd.SYSIN, log).join(' ');
+    const desc = /,\s*D\s*\)/i.test(sysin);
+    let sorted = inLines.slice().sort();
+    if(desc) sorted.reverse();
+    if(outDs) outDs.records = sorted;
+    saveDatasets();
+    log.push({text: jobIdStr + ' ' + step.name + ' EXEC PGM=SORT -- SORTED ' + inLines.length + ' RECORDS (' + (desc?'DESCENDING':'ASCENDING') + ')'});
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0000', cls:'green'});
+    return 0;
+  }
+  if(pgm==='IDCAMS'){
+    const cards = getDatasetLines(step.dd.SYSIN, log);
+    let rc=0;
+    cards.forEach(card=>{
+      const c=card.trim().toUpperCase();
+      if(!c) return;
+      if(c.startsWith('DEFINE')){
+        const nm=(c.match(/NAME\(([^)]+)\)/)||[])[1];
+        if(nm){ DATASETS[nm]={records:[]}; log.push({text: jobIdStr + ' IDC0001I FUNCTION COMPLETED, DEFINE ' + nm}); }
+        else { log.push({text: jobIdStr + ' IDC3009I MISSING NAME ON DEFINE', cls:'amber'}); rc=8; }
+      } else if(c.startsWith('DELETE')){
+        const nm=c.split(/\s+/)[1];
+        if(nm && DATASETS[nm]){ delete DATASETS[nm]; log.push({text: jobIdStr + ' IDC0001I FUNCTION COMPLETED, DELETE ' + nm}); }
+        else { log.push({text: jobIdStr + ' IDC3012I ENTRY ' + nm + ' NOT FOUND', cls:'amber'}); rc=8; }
+      } else if(c.startsWith('REPRO')){
+        const inNm=(c.match(/INFILE\(([^)]+)\)/)||[])[1] || (c.match(/INDATASET\(([^)]+)\)/)||[])[1];
+        const outNm=(c.match(/OUTFILE\(([^)]+)\)/)||[])[1] || (c.match(/OUTDATASET\(([^)]+)\)/)||[])[1];
+        if(inNm && outNm && DATASETS[inNm]){
+          DATASETS[outNm] = DATASETS[outNm] || {records:[]};
+          DATASETS[outNm].records = DATASETS[outNm].records.concat(DATASETS[inNm].records);
+          log.push({text: jobIdStr + ' IDC0001I FUNCTION COMPLETED, REPRO ' + inNm + ' -> ' + outNm});
+        } else {
+          log.push({text: jobIdStr + ' IDC0001I FUNCTION COMPLETED, REPRO (SIMULATED)'});
+        }
+      } else {
+        log.push({text: jobIdStr + ' IDC0002I UNRECOGNIZED IDCAMS COMMAND: ' + card, cls:'amber'});
+      }
+    });
+    saveDatasets();
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE ' + String(rc).padStart(4,'0'), cls: rc>0?'amber':'green'});
+    return rc;
+  }
+  if(pgm==='DSNTEP2' || pgm==='DSNTIAD'){
+    // Classic IBM sample batch dynamic-SQL program: reads semicolon-terminated
+    // SQL statements from SYSIN, prints a report + SQLCODE per statement.
+    const cards = getDatasetLines(step.dd.SYSIN, log);
+    const text = cards.join('\n');
+    const stmts = text.split(';').map(s=>s.trim()).filter(s=>s.length);
+    let maxAbsSqlcode = 0;
+    stmts.forEach(stmt=>{
+      log.push({text: jobIdStr + ' ---------------------------------------------------------------'});
+      log.push({text: jobIdStr + ' SQL STATEMENT:  ' + stmt.replace(/\s+/g,' ')});
+      const res = db2.execute(stmt);
+      if(res.sqlcode<0) maxAbsSqlcode = Math.max(maxAbsSqlcode, Math.abs(res.sqlcode));
+      log.push({text: jobIdStr + ' SQLCODE = ' + res.sqlcode + '  ' + res.message, cls: res.sqlcode<0?'red':(res.sqlcode>0?'amber':undefined)});
+      if(res.rows && res.rows.length){
+        log.push({text: jobIdStr + ' ' + res.columns.join('  ')});
+        res.rows.forEach(r=> log.push({text: jobIdStr + ' ' + res.columns.map(c=>String(r[c])).join('  ')}));
+      }
+    });
+    saveState();
+    const rc = maxAbsSqlcode===0? 0 : (maxAbsSqlcode>=200? 8:4);
+    log.push({text: jobIdStr + ' ' + step.name + ' EXEC PGM=' + pgm + ' -- RAN ' + stmts.length + ' SQL STATEMENT(S)'});
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE ' + String(rc).padStart(4,'0'), cls: rc>0?'amber':'green'});
+    return rc;
+  }
+  if(pgm==='IKJEFT01' || pgm==='IRXJCL'){
+    let execName=null, execArgs='';
+    if(step.parm){ const pm=step.parm.trim().match(/^%?(\S+)\s*(.*)$/); if(pm){ execName=pm[1]; execArgs=pm[2]||''; } }
+    if(!execName){ log.push({text: jobIdStr + ' ' + step.name + ' - NO REXX EXEC NAME RESOLVED FROM PARM=', cls:'amber'}); log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0012', cls:'amber'}); return 12; }
+    const target = MEMBERS[execName.toUpperCase()];
+    if(!target || target.type!=='REXX'){ log.push({text: jobIdStr + ' IKJ56228I ' + execName + ' NOT FOUND OR NOT A REXX EXEC', cls:'red'}); log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0012', cls:'red'}); return 12; }
+    const initialAllocs = {};
+    Object.keys(step.dd).forEach(dd=>{
+      if(!['SYSTSIN','SYSTSPRT','SYSEXEC','SYSPRINT'].includes(dd) && step.dd[dd].dsn) initialAllocs[dd]=step.dd[dd].dsn;
+    });
+    log.push({text: jobIdStr + ' ' + step.name + " EXEC PGM=" + pgm + " RUNNING REXX '" + execName + "'"});
+    const r = new Rexx(target.content, {argString: execArgs, hostCommandHandler, initialAllocs});
+    const res = r.run();
+    res.output.forEach(o=> log.push({text: jobIdStr + ' STDOUT  ' + o}));
+    log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE ' + String(res.rc).padStart(4,'0'), cls: res.rc>0? 'amber':'green'});
+    return res.rc;
+  }
+  log.push({text: jobIdStr + ' ' + step.name + ' EXEC PGM=' + pgm + ' -- (SIMULATED - NO OUTPUT MODEL FOR THIS PGM)'});
+  log.push({text: jobIdStr + ' ' + step.name + ' - STEP WAS EXECUTED - COND CODE 0000', cls:'green'});
+  return 0;
+}
+
+function runJCL(memberName){
+  const mem = MEMBERS[memberName];
+  const jobNum = ++STATE.jobCounter;
+  const jobIdStr = 'JOB' + jobNum;
+  let log = [];
+  log.push({text:'------------------------ JES2 JOB LOG ------------------------', cls:'dim'});
+  if(!mem || mem.type!=='JCL'){
+    log.push({text:'IEF212I ' + memberName + ' JCL ERROR - MEMBER NOT FOUND OR NOT JCL', cls:'red'});
+    const jobRec = {name:memberName, jobid:jobIdStr, rc:'JCLERR', log};
+    STATE.jobs.push(jobRec);
+    return jobRec;
+  }
+  const job = parseJCL(mem.content);
+  const jobName = job.name || memberName;
+  log.push({text: jobIdStr + ' ' + jobName + ' - STARTED - INIT 1 - CLASS A'});
+  log.push({text: jobIdStr + ' IEF403I ' + jobName + ' - STARTED'});
+  log.push({text: ''});
+
+  if(job.steps.length===0){
+    log.push({text:'IEF212I ' + jobName + ' JCL ERROR - NO EXEC STATEMENTS FOUND', cls:'red'});
+    log.push({text: jobIdStr + ' IEF404I ' + jobName + ' - ENDED - RC=JCL ERROR', cls:'red'});
+    const jobRec = {name:jobName, jobid:jobIdStr, rc:'JCLERR', log};
+    STATE.jobs.push(jobRec);
+    return jobRec;
+  }
+
+  let prevRC=0, maxRC=0;
+  job.steps.forEach(step=>{
+    if(step.cond && step.cond.length && condSaysSkip(step.cond, prevRC)){
+      log.push({text: jobIdStr + ' ' + step.name + ' - STEP BYPASSED - COND=' + JSON.stringify(step.cond) + ' SATISFIED BY PRIOR RC=' + prevRC, cls:'amber'});
+      return;
+    }
+    const rc = runStep(step, jobIdStr, log);
+    prevRC = rc; maxRC = Math.max(maxRC, rc);
+  });
+
+  log.push({text:''});
+  log.push({text: jobIdStr + ' IEF404I ' + jobName + ' - ENDED', cls: maxRC>0?'amber':'green'});
+  log.push({text: jobIdStr + ' ' + jobName + ' MAXIMUM CONDITION CODE = ' + String(maxRC).padStart(4,'0'), cls: maxRC>0?'amber':'green'});
+  log.push({text:'---------------------------------------------------------------', cls:'dim'});
+  const jobRec = {name:jobName, jobid:jobIdStr, rc:maxRC, log};
+  STATE.jobs.push(jobRec);
+  saveState();
+  return jobRec;
+}
+
+// =====================================================================
+// --------------------------- COMMAND ROUTER -----------------------------
+// =====================================================================
+function handleCommand(raw){
+  const typedByUser = (raw===undefined);
+  const cmdRaw = (raw!==undefined? raw : cmdInput.value).trim();
+  cmdInput.value='';
+
+  if(cmdRaw && !cmdRaw.startsWith('__')){
+    if(typedByUser && CMD_HISTORY[CMD_HISTORY.length-1]!==cmdRaw){
+      CMD_HISTORY.push(cmdRaw);
+      if(CMD_HISTORY.length>200) CMD_HISTORY.shift();
+    }
+    logActivity('CMD', (typedByUser? '' : '[PF] ') + cmdRaw);
+  }
+  STATE.histIdx = null; STATE.histDraft = '';
+
+  if(STATE.screen==='edit'){ handleEditCommand(cmdRaw); return; }
+  if(STATE.screen==='panelrun'){
+    const upperP = cmdRaw.toUpperCase();
+    if(upperP==='M'){ PANEL_RUNTIME=null; PANEL_STACK=[]; showPrimaryMenu(); return; }
+    if(upperP==='__PANEL_CANCEL__' || upperP==='PF3' || upperP==='PF12' || upperP==='CANCEL'){ cancelPanel(); return; }
+    const panelParts = cmdRaw.split(/\s+/).filter(Boolean);
+    const panelVerb = (panelParts[0]||'').toUpperCase();
+    if(panelVerb==='F' || panelVerb==='FIND'){ doFind(panelParts.slice(1).join(' ')); return; }
+    submitPanel();
+    return;
+  }
+
+  const cmd = cmdRaw;
+  const upper = cmd.toUpperCase();
+  const parts = cmd.split(/\s+/).filter(Boolean);
+  const verb = (parts[0]||'').toUpperCase();
+
+  if(STATE.screen==='logon'){
+    if(upper==='LOGON' || upper===''){ logActivity('LOGON', STATE.userid); showPrimaryMenu(); return; }
+    if(upper==='CONNECT'){ connectFolder(); return; }
+    if(upper==='DISCONNECT'){ disconnectFolder(); return; }
+    if(upper==='RECONNECT'){ reconnectPending(); return; }
+    if(upper==='HELP'){ appendResultScreen('HELP', [
+      {text:'This is a simulated 3270 / TSO / ISPF environment devloped by Abhishek.'},
+      {text:'Type LOGON to sign on, then use the ISPF menu or type'},
+      {text:'commands like EX, SUBMIT, EDIT, LIST, ALLOC directly.'},
+    ]); return; }
+    showLogon(); return;
+  }
+
+  if(upper==='M' || upper==='MENU' || upper==='=M'){ showPrimaryMenu(); return; }
+  if(upper==='X' || upper==='LOGOFF' || upper==='LOGOUT'){ showLogon(); return; }
+  if(upper==='HELP'){ showCommandScreen(); return; }
+  if(upper==='EXPORT'){ exportSession(); appendResultScreen('EXPORT', [{text:'Session downloaded as a .json file.'}, {text:'Copy it to another laptop and use IMPORT there to restore everything.'}]); return; }
+  if(upper==='IMPORT'){ document.getElementById('importFileInput').click(); return; }
+  if(upper==='CONNECT'){ connectFolder(); return; }
+  if(upper==='DISCONNECT'){ disconnectFolder(); return; }
+  if(upper==='RECONNECT'){ reconnectPending(); return; }
+  if(verb==='LOG'){ showActivityLog(parts.slice(1).join(' ')); return; }
+  if(verb==='PANELS'){ showPanelsList(); return; }
+  if(verb==='F' || verb==='FIND'){ doFind(parts.slice(1).join(' ')); return; }
+  if(verb==='DOWNLOAD'){ doDownload((parts[1]||'').toUpperCase()); return; }
+  if(verb==='UPLOAD'){ doUpload((parts[1]||'').toUpperCase(), parts[2]); return; }
+  if(verb==='SQL'){ const sqlText = cmd.slice(3).trim(); if(!sqlText){ appendResultScreen('SQL', [{text:'Usage: SQL <statement>'}]); return; } const res = db2.execute(sqlText); saveState(); logActivity('SQL', sqlText.slice(0,60) + '  SQLCODE=' + res.sqlcode); appendResultScreen('SQL RESULT', formatSqlResult(res)); return; }
+
+  if(STATE.screen==='result'){ showPrimaryMenu(); return; }
+
+  if(STATE.screen==='spufi'){
+    if(upper===''){ showSPUFI(); return; }
+    const res = db2.execute(cmd);
+    saveState();
+    logActivity('SQL', cmd.slice(0,60) + '  SQLCODE=' + res.sqlcode);
+    showSPUFI(formatSqlResult(res));
+    return;
+  }
+
+  if(STATE.screen==='menu'){
+    if(verb==='0'){
+      const storageLines = [];
+      if(DIR_HANDLE){
+        storageLines.push({text:'STORAGE: connected to a real folder: "' + DIR_HANDLE.name + '"', cls:'green'});
+        storageLines.push({text:'Every action writes ' + SESSION_FILENAME + ' into that folder. Type'});
+        storageLines.push({text:'DISCONNECT to go back to browser-only storage.'});
+      } else if(PENDING_RECONNECT_HANDLE){
+        storageLines.push({text:'STORAGE: browser storage only right now.', cls:'amber'});
+        storageLines.push({text:'This browser was connected to folder "' + PENDING_RECONNECT_NAME + '" before -'});
+        storageLines.push({text:'type RECONNECT to restore access to it (needs one click).'});
+      } else if(FSA_SUPPORTED){
+        storageLines.push({text:'STORAGE: browser local storage only (no folder connected).'});
+        storageLines.push({text:'Type CONNECT to pick a real folder on disk instead - everything then'});
+        storageLines.push({text:'saves there as a plain ' + SESSION_FILENAME + ' file you can inspect, back up,'});
+        storageLines.push({text:'or share by pointing another Chrome/Edge browser at the same folder.'});
+      } else {
+        storageLines.push({text:'STORAGE: browser local storage only.'});
+        storageLines.push({text:'(Folder connection needs Chrome, Edge, or another Chromium browser.)'});
+      }
+      appendResultScreen('SETTINGS', [
+        {text:'USERID: ' + STATE.userid},
+        {text:'TERMINAL: 3270 (simulated), 80x24 model 2 equivalent'},
+        {text:''},
+        {text:'PERSISTENCE:', cls:'white'},
+        ...storageLines,
+        {text:''},
+        {text:'Everything (members, datasets, DB2 tables) auto-saves after every'},
+        {text:'action, regardless of which storage tier is active.'},
+        {text:''},
+        {text:'To move a session between machines without a connected folder:'},
+        {text:'EXPORT downloads a .json snapshot; IMPORT loads one back in.'},
+      ]);
+      return;
+    }
+    if(verb==='1' || verb==='LIBRARY' || verb==='LIST'){ showLibrary(); return; }
+    if(verb==='2' || verb==='EDIT'){
+      const name=(parts[1]||'').toUpperCase();
+      if(name) showEditor(name, !MEMBERS[name], 'members');
+      else appendResultScreen('EDIT', [{text:'Usage: EDIT <member-name>  (or use option 2 then type EDIT name)'}]);
+      return;
+    }
+    if(verb==='3'){ showRunRexxPrompt(); return; }
+    if(verb==='4'){ showSubmitPrompt(); return; }
+    if(verb==='5' || verb==='SDSF'){ showSDSF(); return; }
+    if(verb==='6' || verb==='DATASETS' || verb==='LISTCAT'){ showDatasets(); return; }
+    if(verb==='7' || verb==='DB2' || verb==='SPUFI'){ showSPUFI(); return; }
+    if(verb==='8' || verb==='COMMAND'){ showCommandScreen(); return; }
+    if(verb==='9' || verb==='PANELS'){ showPanelsList(); return; }
+    if(verb==='EX'){ doRunRexx(parts.slice(1)); return; }
+    if(verb==='SUB' || verb==='SUBMIT'){ doSubmit(parts[1]); return; }
+    if(verb==='DEL'){ doDelete(parts[1]); return; }
+    if(verb==='NEW'){ doNew(parts[1], parts[2]); return; }
+    if(verb==='ALLOC'){ doAllocDataset(parts[1]); return; }
+    if(verb==='BROWSE'){ showBrowseDataset((parts[1]||'').toUpperCase()); return; }
+    if(verb==='DELDS'){ doDeleteDataset(parts[1]); return; }
+    appendResultScreen('UNKNOWN OPTION', [{text:'"' + cmd + '" is not a valid option. Choose 0-9 or X.'}]);
+    return;
+  }
+
+  if(STATE.screen==='panels'){
+    if(verb==='R' && parts[1]){ showPanelRun((parts[1]||'').toUpperCase()); return; }
+    if(verb==='E' || verb==='EDIT'){
+      const name=(parts[1]||'').toUpperCase();
+      if(name) showEditor(name, !MEMBERS[name], 'members', 'PANEL');
+      else appendResultScreen('EDIT', [{text:'Usage: E <panel-name>'}]);
+      return;
+    }
+    if(verb==='NEW'){ doNew(parts[1], parts[2]||'PANEL'); return; }
+    if(verb==='DEL'){ doDelete(parts[1]); return; }
+    if(verb==='POOL'){ showPoolInspector(); return; }
+    if(verb==='TABLES'){ showTablesInspector(); return; }
+    showPanelsList(); return;
+  }
+
+  if(STATE.screen==='library'){
+    if(verb==='E' || verb==='EDIT'){ const name=(parts[1]||'').toUpperCase(); if(name) showEditor(name,!MEMBERS[name],'members'); else appendResultScreen('EDIT',[{text:'Usage: E <member-name>'}]); return; }
+    if(verb==='EX'){ doRunRexx(parts.slice(1)); return; }
+    if(verb==='SUB'){ doSubmit(parts[1]); return; }
+    if(verb==='DEL'){ doDelete(parts[1]); return; }
+    if(verb==='NEW'){ doNew(parts[1], parts[2]); return; }
+    showLibrary(); return;
+  }
+
+  if(STATE.screen==='runrexx'){
+    if(verb==='EX'){ doRunRexx(parts.slice(1)); return; }
+    if(MEMBERS[verb] && MEMBERS[verb].type==='REXX'){ doRunRexx(parts); return; }
+    showRunRexxPrompt(); return;
+  }
+
+  if(STATE.screen==='submit'){
+    if(verb==='SUB' || verb==='SUBMIT'){ doSubmit(parts[1]); return; }
+    if(MEMBERS[verb] && MEMBERS[verb].type==='JCL'){ doSubmit(verb); return; }
+    showSubmitPrompt(); return;
+  }
+
+  if(STATE.screen==='sdsf'){
+    if(verb==='S' && parts[1]){ const idx=parseInt(parts[1],10)-1; showSDSFDetail(idx); return; }
+    if(verb==='Q'){ showSDSF(); return; }
+    showSDSF(); return;
+  }
+
+  if(STATE.screen==='datasets'){
+    if(verb==='ALLOC'){ doAllocDataset(parts[1]); return; }
+    if(verb==='BROWSE'){ showBrowseDataset((parts[1]||'').toUpperCase()); return; }
+    if(verb==='EDIT'){ const name=(parts[1]||'').toUpperCase(); if(name) showEditor(name,!DATASETS[name],'datasets'); else appendResultScreen('EDIT',[{text:'Usage: EDIT <dsname>'}]); return; }
+    if(verb==='DEL' || verb==='DELDS'){ doDeleteDataset(parts[1]); return; }
+    showDatasets(); return;
+  }
+
+  if(STATE.screen==='command'){
+    if(verb==='EX'){ doRunRexx(parts.slice(1)); return; }
+    if(verb==='SUB' || verb==='SUBMIT'){ doSubmit(parts[1]); return; }
+    if(verb==='LIST' || verb==='LIBRARY'){ showLibrary(); return; }
+    if(verb==='EDIT'){ const name=(parts[1]||'').toUpperCase(); if(name) showEditor(name,!MEMBERS[name],'members'); else appendResultScreen('EDIT',[{text:'Usage: EDIT <member-name>'}]); return; }
+    if(verb==='DEL'){ doDelete(parts[1]); return; }
+    if(verb==='NEW'){ doNew(parts[1], parts[2]); return; }
+    if(verb==='SDSF'){ showSDSF(); return; }
+    if(verb==='DATASETS' || verb==='LISTCAT'){ showDatasets(); return; }
+    if(verb==='ALLOC'){ doAllocDataset(parts[1]); return; }
+    if(verb==='BROWSE'){ showBrowseDataset((parts[1]||'').toUpperCase()); return; }
+    if(verb==='DELDS'){ doDeleteDataset(parts[1]); return; }
+    if(verb==='DB2' || verb==='SPUFI'){ showSPUFI(); return; }
+    if(verb==='PANELS'){ showPanelsList(); return; }
+    if(verb==='LOG'){ showActivityLog(parts.slice(1).join(' ')); return; }
+    appendResultScreen('UNKNOWN COMMAND', [{text:'"' + cmd + '" not recognized. Type HELP for a list.'}]);
+    return;
+  }
+
+  showPrimaryMenu();
+}
+
+function doRunRexx(argParts){
+  const name = (argParts[0]||'').toUpperCase();
+  const args = argParts.slice(1).join(' ');
+  if(!name){ appendResultScreen('RUN REXX', [{text:'Usage: EX <member> [args]'}]); return; }
+  const mem = MEMBERS[name];
+  if(!mem || mem.type!=='REXX'){ appendResultScreen('RUN REXX', [{text:name + ' is not a REXX member.'}]); return; }
+  const r = new Rexx(mem.content, {argString: args, hostCommandHandler});
+  const res = r.run();
+  saveState();
+  logActivity('EXEC', name + (args? ' '+args:'') + '  RC=' + res.rc);
+  let body = [];
+  body.push({text:'READY  EX ' + name + (args? ' '+args:''), cls:'amber'});
+  body.push({text:''});
+  if(res.output.length===0) body.push({text:'(no SAY output produced)', cls:'dim'});
+  res.output.forEach(o=>body.push({text: o}));
+  body.push({text:''});
+  body.push({text:'*** ' + name + ' ENDED, RC=' + res.rc + ' ***', cls: res.rc>0?'amber':'green'});
+  appendResultScreen('REXX EXECUTION: ' + name, body);
+}
+
+function doSubmit(name){
+  const nm = (name||'').toUpperCase();
+  if(!nm){ appendResultScreen('SUBMIT', [{text:'Usage: SUB <member>'}]); return; }
+  const jobRec = runJCL(nm);
+  logActivity('SUBMIT', nm + ' ' + jobRec.jobid + '  RC=' + jobRec.rc);
+  appendResultScreen('JOB SUBMITTED: ' + nm + ' (' + jobRec.jobid + ')', [
+    {text:'Job routed to JES2 internal reader...', cls:'dim'},
+    {text:''},
+    ...jobRec.log,
+    {text:''},
+    {text:'View full log any time with option 5 (SDSF).', cls:'blue'}
+  ]);
+}
+
+function doDelete(name){
+  const nm=(name||'').toUpperCase();
+  if(!nm || !MEMBERS[nm]){ appendResultScreen('DELETE', [{text:'Member not found: ' + nm}]); return; }
+  delete MEMBERS[nm];
+  saveMembers();
+  logActivity('DELETE MEMBER', nm);
+  appendResultScreen('DELETE', [{text:'Member ' + nm + ' deleted.'}]);
+}
+
+function doNew(name, type){
+  const nm=(name||'').toUpperCase();
+  const ty=(type||'REXX').toUpperCase();
+  if(!nm){ appendResultScreen('NEW MEMBER', [{text:'Usage: NEW <name> [REXX|JCL|TEXT|PANEL]'}]); return; }
+  if(!['REXX','JCL','TEXT','PANEL'].includes(ty)){ appendResultScreen('NEW MEMBER', [{text:'TYPE must be REXX, JCL, TEXT, or PANEL'}]); return; }
+  logActivity('NEW MEMBER', nm + ' ' + ty);
+  showEditor(nm, true, 'members', ty);
+}
+
+function doAllocDataset(name){
+  const nm=(name||'').toUpperCase();
+  if(!nm){ appendResultScreen('ALLOC', [{text:'Usage: ALLOC <dsname>'}]); return; }
+  if(DATASETS[nm]){ appendResultScreen('ALLOC', [{text:'Dataset already exists: ' + nm}]); return; }
+  DATASETS[nm] = {records:[]};
+  saveDatasets();
+  logActivity('ALLOC DATASET', nm);
+  appendResultScreen('ALLOC', [{text:'IEF285I ' + nm + ' CATALOGED'}, {text:'Use EDIT ' + nm + ' to add records.'}]);
+}
+function doDeleteDataset(name){
+  const nm=(name||'').toUpperCase();
+  if(!nm || !DATASETS[nm]){ appendResultScreen('DELETE DATASET', [{text:'Dataset not found: ' + nm}]); return; }
+  delete DATASETS[nm];
+  saveDatasets();
+  logActivity('DELETE DATASET', nm);
+  appendResultScreen('DELETE DATASET', [{text:'IDC0001I FUNCTION COMPLETED, DELETE ' + nm}]);
+}
+
+function handleEditCommand(cmdRaw){
+  const upper = cmdRaw.toUpperCase();
+  if(upper===''){ return; }
+  const editParts = cmdRaw.split(/\s+/).filter(Boolean);
+  const editVerb = (editParts[0]||'').toUpperCase();
+  if(editVerb==='F' || editVerb==='FIND'){ findInEditArea(editParts.slice(1).join(' ') || STATE.lastFind); return; }
+  if(editVerb==='DOWNLOAD'){
+    downloadContent(STATE.currentMember, editArea.value, STATE.currentMember + '.txt', (msg) => {
+      const prev = cmdInput.placeholder;
+      cmdInput.placeholder = msg;
+      setTimeout(() => { if(cmdInput.placeholder===msg) cmdInput.placeholder = prev; }, 2500);
+    });
+    return;
+  }
+  if(editVerb==='UPLOAD'){ PENDING_UPLOAD = {kind:'editarea'}; uploadFileInput.click(); return; }
+  if(upper==='SAVE' || upper==='PF3' || upper==='__SAVE_EXIT__'){
+    saveCurrentEdit();
+    hideEditorUI();
+    appendResultScreen('SAVED', [{text: (STATE.editStore==='members'?'Member ':'Dataset ') + STATE.currentMember + ' saved.'}]);
+    return;
+  }
+  if(upper==='__SAVE_RUN__' || upper==='PF5'){
+    saveCurrentEdit();
+    hideEditorUI();
+    if(STATE.editStore==='members'){
+      const mem = MEMBERS[STATE.currentMember];
+      if(mem.type==='REXX') doRunRexx([STATE.currentMember]);
+      else if(mem.type==='JCL') doSubmit(STATE.currentMember);
+      else appendResultScreen('SAVED', [{text:'Member ' + STATE.currentMember + ' saved (TEXT members are not executable).'}]);
+    } else {
+      appendResultScreen('SAVED', [{text:'Dataset ' + STATE.currentMember + ' saved.'}]);
+    }
+    return;
+  }
+  if(upper==='__CANCEL__' || upper==='CANCEL' || upper==='PF12'){
+    hideEditorUI();
+    if(STATE.editStore==='members') showLibrary(); else showDatasets();
+    return;
+  }
+  if(upper==='M'){ hideEditorUI(); showPrimaryMenu(); return; }
+}
+function saveCurrentEdit(){
+  if(STATE.editStore==='members'){ MEMBERS[STATE.currentMember].content = editArea.value; saveMembers(); logActivity('EDIT SAVE', STATE.currentMember + ' (' + MEMBERS[STATE.currentMember].type + ')'); }
+  else { DATASETS[STATE.currentMember].records = editArea.value.split('\n'); saveDatasets(); logActivity('EDIT SAVE', STATE.currentMember + ' (dataset)'); }
+}
+
+// =====================================================================
+// ------------------------------ EVENTS ---------------------------------
+// =====================================================================
+cmdInput.addEventListener('keydown', (e)=>{
+  if(e.key==='Enter'){ e.preventDefault(); handleCommand(); return; }
+  if(e.key==='ArrowUp'){
+    if(CMD_HISTORY.length===0) return;
+    e.preventDefault();
+    if(STATE.histIdx===null){ STATE.histDraft = cmdInput.value; STATE.histIdx = CMD_HISTORY.length; }
+    if(STATE.histIdx>0){ STATE.histIdx--; cmdInput.value = CMD_HISTORY[STATE.histIdx]; }
+    return;
+  }
+  if(e.key==='ArrowDown'){
+    if(STATE.histIdx===null) return;
+    e.preventDefault();
+    STATE.histIdx++;
+    if(STATE.histIdx>=CMD_HISTORY.length){ STATE.histIdx=null; cmdInput.value = STATE.histDraft; }
+    else cmdInput.value = CMD_HISTORY[STATE.histIdx];
+    return;
+  }
+});
+function firePFByNumber(n){
+  const btns = pfbar.querySelectorAll('button.pfkey');
+  const re = new RegExp('^PF' + n + '\\b');
+  for(const b of btns){ if(re.test(b.textContent)){ b.click(); return true; } }
+  return false;
+}
+// PF7/PF8 (scroll up/down) and PF10/PF11 (scroll left/right) work on
+// whatever's currently in #screen, same as real ISPF's universal scroll
+// keys -- unlike the other PF keys, these aren't tied to a specific
+// button, they always act on the content area.
+function scrollScreenBy(dir){
+  const page = Math.max(40, Math.round(screenEl.clientHeight * 0.85));
+  if(dir==='up') screenEl.scrollTop -= page;
+  else if(dir==='down') screenEl.scrollTop += page;
+  else if(dir==='left') screenEl.scrollLeft -= 200;
+  else if(dir==='right') screenEl.scrollLeft += 200;
+}
+document.addEventListener('keydown', (e)=>{
+  // Physical F1-F12 map to whichever PF button is currently on screen, by
+  // matching its label (real terminal-emulator behavior, and it stays in
+  // sync automatically with whatever setPF() last put in the bar). Real
+  // Chromium reserves several function keys at the browser-shell level --
+  // F3=Find, F5=Reload, F11=Fullscreen, F12=DevTools -- and page JS cannot
+  // override those even with preventDefault(), in a real installed browser
+  // window (this sandboxed preview doesn't reserve them, so they can look
+  // fine here and still not work in the real app). For those specific
+  // keys, the on-screen PF buttons remain the only fully reliable way to
+  // press them. Escape is not reserved for anything in --app mode, so it's
+  // offered as a dependable Cancel substitute on the edit/panel screens.
+  const fm = /^F([1-9]|1[0-2])$/.exec(e.key);
+  if(fm){
+    const n = fm[1];
+    if(firePFByNumber(n)){ e.preventDefault(); return; }
+    if(n==='7'){ e.preventDefault(); scrollScreenBy('up'); return; }
+    if(n==='8'){ e.preventDefault(); scrollScreenBy('down'); return; }
+    if(n==='10'){ e.preventDefault(); scrollScreenBy('left'); return; }
+    if(n==='11'){ e.preventDefault(); scrollScreenBy('right'); return; }
+    if(n==='5' && STATE.lastFind){ // best-effort RFIND; the PF5 NEXT button is the reliable path
+      e.preventDefault();
+      if(STATE.screen==='edit') findInEditArea(STATE.lastFind); else doFind(STATE.lastFind);
+      return;
+    }
+  }
+  if(e.key==='Escape'){
+    if(STATE.screen==='edit'){ e.preventDefault(); handleEditCommand('PF12'); return; }
+    if(STATE.screen==='panelrun'){ e.preventDefault(); cancelPanel(); return; }
+  }
+});
+screenEl.addEventListener('click', ()=>{
+  // A click still fires after a mouse-drag text selection (mousedown+drag+mouseup
+  // on the same element) -- don't steal focus to the command line in that case,
+  // or the selection you just made becomes useless for copying.
+  const sel = window.getSelection();
+  if(sel && sel.toString().length>0) return;
+  if(document.activeElement === cmdInput){
+    // Already focused -- on mobile this means the on-screen keyboard is up.
+    // Tap the screen again to dismiss it, instead of re-focusing and having
+    // the keyboard immediately pop right back open.
+    cmdInput.blur();
+    return;
+  }
+  cmdInput.focus();
+});
+
+// Track the actual visible viewport height (excludes the on-screen keyboard)
+// and expose it as a CSS var, so #crt shrinks to fit above the keyboard
+// instead of the keyboard covering the command line / PF keys. dvh alone is
+// unreliable for this across Android WebView/Chrome versions; VisualViewport
+// is the robust cross-version fix. Falls back to plain 100%/100dvh (already
+// in the CSS) on browsers without VisualViewport support -- nothing breaks.
+if(window.visualViewport){
+  const updateAppHeight = () => {
+    document.documentElement.style.setProperty('--app-vh', window.visualViewport.height + 'px');
+  };
+  window.visualViewport.addEventListener('resize', updateAppHeight);
+  window.visualViewport.addEventListener('scroll', updateAppHeight);
+  updateAppHeight();
+}
+document.getElementById('importFileInput').addEventListener('change', (e)=>{
+  const file = e.target.files && e.target.files[0];
+  if(file) importSessionFromFile(file);
+  e.target.value = ''; // allow re-selecting the same file later
+});
+
+// =====================================================================
+// ------------------------------- INIT -----------------------------------
+// =====================================================================
+loadState().then(()=>{
+  showLogon();
+  cmdInput.focus();
+}).catch((err)=>{
+  renderFatalError('startup (loadState failed)', err);
+});
+
+})();
+</script>
+<script>
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  // Service workers need a secure context (http/https); running as a local
+  // file:// desktop app (see Launch-3270.vbs) skips this entirely -- no
+  // offline cache is needed when the app already lives on local disk.
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch((e) => console.error('SW registration failed', e));
+  });
+}
+</script>
+</body>
+</html>
